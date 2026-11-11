@@ -341,6 +341,20 @@ pub fn ajustes(app: &mut App, ui: &mut egui::Ui) {
             if linha(ui, "Velocidade dos filmes e séries", &format!("{}×", app.velocidade), Icone::Velocidade).clicked() {
                 acao = Some(1);
             }
+            if linha(ui, "Sugestões de pular abertura", if app.sugerir_pulos {
+                "Ligado: mostrar botões de pulo (marcas podem estar erradas)"
+            } else {
+                "Desligado: sem botões de pular abertura ou recapitulação"
+            }, Icone::Proximo).clicked() {
+                acao = Some(13);
+            }
+            if linha(ui, "Próximo episódio automático", if app.proximo_automatico {
+                "Ligado: avançar apenas após o término real do vídeo"
+            } else {
+                "Desligado: nunca interromper ou avançar sozinho"
+            }, Icone::Tocar).clicked() {
+                acao = Some(14);
+            }
             if linha(ui, "Som", &if app.mudo { "Sem som".to_string() } else { format!("Volume {}%", app.volume) }, if app.mudo { Icone::Mudo } else { Icone::Som }).clicked() {
                 acao = Some(2);
             }
@@ -418,6 +432,8 @@ pub fn ajustes(app: &mut App, ui: &mut egui::Ui) {
         Some(7) => app.alternar_upscaling(),
         Some(10) => app.alternar_audio_inteligente(),
         Some(11) => app.alternar_zero_delay(),
+        Some(13) => app.alternar_sugestoes_de_pulo(),
+        Some(14) => app.alternar_proximo_automatico(),
         Some(1) => {
             let ordem = [1.0, 1.25, 1.5, 2.0, 0.75];
             let atual = ordem.iter().position(|v| *v == app.velocidade).unwrap_or(0);
