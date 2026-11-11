@@ -324,7 +324,7 @@ fn continuar(app: &App, filtro: impl Fn(bool) -> bool) -> Option<Fila> {
             "Filme".to_string()
         };
         let repeticoes = if registro.reproducoes > 1 {
-            format!(" · {} reproduções", registro.reproducoes)
+            format!(" · {} sessões", registro.reproducoes)
         } else { String::new() };
         c.sub = match marca {
             Some(m) => format!("{detalhes} · {}{repeticoes}", progresso::falta(&m)),
