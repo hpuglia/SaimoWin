@@ -236,10 +236,15 @@ fn marca_da_serie(
 /// Último episódio registrado no histórico, inclusive o que terminou.
 /// Para instalações antigas ainda sem histórico, usa o mapa anterior e marcas.
 pub fn episodio_da_serie(serie: &str) -> Option<(u32, u32)> {
-    if let Some(episodio) = historico_eventos().iter()
-        .filter(|e| e.serie && e.titulo == serie)
-        .max_by_key(|e| e.quando)
-        .map(|e| (e.temporada, e.episodio)) {
+    let ultima_reproducao = {
+        let guarda = historico_eventos();
+        guarda.as_ref()
+            .and_then(|lista| lista.iter()
+                .filter(|e| e.serie && e.titulo == serie)
+                .max_by_key(|e| e.quando)
+                .map(|e| (e.temporada, e.episodio)))
+    };
+    if let Some(episodio) = ultima_reproducao {
         return Some(episodio);
     }
     if let Some(episodio) = ultimos_episodios()
