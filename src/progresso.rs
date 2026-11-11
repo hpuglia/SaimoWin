@@ -153,10 +153,15 @@ pub fn salvar(titulo: &str, posicao: f64, duracao: f64) {
     // Episódios curtos não podem perder o progresso dois minutos antes do fim.
     let sobra = if duracao > 0.0 { (duracao * 0.03).clamp(15.0, SOBRA) } else { SOBRA };
     let no_fim = duracao > 0.0 && posicao >= duracao - sobra;
+    // Não apagar um progresso anterior enquanto o novo vídeo ainda abre:
+    // o mpv às vezes informa 0 nos primeiros quadros, antes de retomar.
+    if posicao < MINIMO {
+        return;
+    }
     {
         let mut guarda = marcas();
         let mapa = guarda.as_mut().unwrap();
-        if posicao < MINIMO || no_fim {
+        if no_fim {
             if mapa.remove(titulo).is_none() {
                 return;
             }
