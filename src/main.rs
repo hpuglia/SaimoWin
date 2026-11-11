@@ -1302,6 +1302,12 @@ impl App {
         let (episodio, marcas, legendas, legenda_escolhida) = anterior
             .map(|t| (t.episodio, t.marcas, t.legendas, t.legenda_escolhida))
             .unwrap_or((None, None, Vec::new(), None));
+        // O histórico registra aberturas mesmo se uma fonte não informar
+        // duração/posição. Episódios usam uma chave própria após tocar_vod.
+        let registrar_filme = nova && !titulo.contains(" · T");
+        if registrar_filme {
+            progresso::registrar_filme(&titulo);
+        }
         self.tocando_vod = Some(TocandoVod {
             titulo,
             urls,
@@ -1321,6 +1327,9 @@ impl App {
         self.letreiro_ate = Instant::now() + SUMIR_LETREIRO;
         self.aba = Aba::Canais;
         self.mostrar_controles();
+        if registrar_filme {
+            self.mandar_dados();
+        }
     }
 
     fn tocar_episodio(&mut self, serie: &str, episodio: vod::Episodio, lista: Vec<vod::Episodio>) {
@@ -1339,6 +1348,10 @@ impl App {
             versao: episodio.versao.clone(),
             lista,
         });
+        // A seleção do episódio precisa ficar registrada desde o início:
+        // streams sem time-pos também aparecem no histórico e são retomáveis.
+        progresso::registrar_episodio(serie, episodio.temporada, episodio.numero);
+        self.mandar_dados();
         self.pedir_legendas(titulo.clone(), self.generos.id(serie, true), true, episodio.temporada, episodio.numero);
         self.pedir_marcas(titulo, self.generos.id(serie, true), episodio.temporada, episodio.numero);
         self.pedir_logo(serie, true);
@@ -1543,11 +1556,16 @@ impl App {
         if !filme.confirmado {
             return;
         }
-        if let Some((posicao, duracao)) = mpv.posicao() {
+        // Em alguns HLS o mpv deixa time-pos indisponível na transição.
+        // O último ponto medido em acompanhar_vod continua válido.
+        let medido = mpv.posicao()
+            .filter(|(posicao, _)| *posicao > 0.0)
+            .or_else(|| (filme.visto.0 > 0.0).then_some(filme.visto));
+        if let Some((posicao, duracao)) = medido {
             progresso::salvar(&filme.titulo, posicao, duracao);
-            if agora {
-                self.mandar_dados();
-            }
+        }
+        if agora {
+            self.mandar_dados();
         }
     }
 
