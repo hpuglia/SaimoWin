@@ -167,21 +167,90 @@ pub fn salvar(titulo: &str, posicao: f64, duracao: f64) {
     gravar();
 }
 
-/// Onde parou o último episódio visto de uma série.
-///
-/// A chave do episódio é "Série · T1 E2"; a do cartão é só o nome da série.
-/// Sem isto o cartão de série nunca mostrava barra nenhuma.
+/// O último episódio reproduzido, inclusive quando já terminou ou durou menos
+/// de um minuto. As marcas parciais não bastam: ao terminar, salvar() as apaga.
+static ULTIMOS_EPISODIOS: Mutex<Option<HashMap<String, (u32, u32)>>> = Mutex::new(None);
+
+fn arquivo_ultimos_episodios() -> std::path::PathBuf {
+    crate::catalogo::pasta().join("ultimos-episodios.json")
+}
+
+fn ultimos_episodios() -> std::sync::MutexGuard<'static, Option<HashMap<String, (u32, u32)>>> {
+    let mut guarda = ULTIMOS_EPISODIOS.lock().unwrap();
+    if guarda.is_none() {
+        let lido = std::fs::read_to_string(arquivo_ultimos_episodios())
+            .ok()
+            .and_then(|texto| serde_json::from_str::<HashMap<String, (u32, u32)>>(&texto).ok())
+            .unwrap_or_default();
+        *guarda = Some(lido);
+    }
+    guarda
+}
+
+/// Chamado somente depois que o mpv confirmou a reprodução do episódio.
+pub fn lembrar_episodio(serie: &str, temporada: u32, numero: u32) {
+    if serie.is_empty() || numero == 0 {
+        return;
+    }
+    let texto = {
+        let mut guarda = ultimos_episodios();
+        let mapa = guarda.as_mut().unwrap();
+        if mapa.get(serie) == Some(&(temporada, numero)) {
+            return;
+        }
+        mapa.insert(serie.to_string(), (temporada, numero));
+        serde_json::to_string(mapa).ok()
+    };
+    if let Some(texto) = texto {
+        let _ = std::fs::write(arquivo_ultimos_episodios(), texto);
+    }
+}
+
+/// A chave de progresso é "Série · T1 E2"; usa números, não ordenação textual
+/// (T10 E10 não pode vir antes de T2 E9 por comparação alfabética).
+fn numeros_do_episodio(serie: &str, chave: &str) -> Option<(u32, u32)> {
+    let resto = chave.strip_prefix(serie)?.strip_prefix(" · T")?;
+    let (temporada, numero) = resto.split_once(" E")?;
+    Some((temporada.parse().ok()?, numero.parse().ok()?))
+}
+
+/// Escolhe o episódio parcial gravado mais recentemente. Para marcas antigas sem
+/// data, desempata por temporada/episódio numéricos.
+fn marca_da_serie(
+    serie: &str,
+    mapa: &HashMap<String, (f64, f64)>,
+    horarios: Option<&HashMap<String, i64>>,
+) -> Option<(String, Marca)> {
+    mapa.iter()
+        .filter_map(|(chave, &(posicao, duracao))| {
+            let (temporada, numero) = numeros_do_episodio(serie, chave)?;
+            let quando = horarios.and_then(|q| q.get(chave)).copied().unwrap_or(0);
+            Some((chave.clone(), Marca { posicao, duracao }, (quando, temporada, numero)))
+        })
+        .max_by_key(|(_, _, ordem)| *ordem)
+        .map(|(chave, marca, _)| (chave, marca))
+}
+
+/// Último episódio efetivamente reproduzido. Para instalações antigas, usa
+/// as marcas de progresso existentes até que um episódio novo seja confirmado.
+pub fn episodio_da_serie(serie: &str) -> Option<(u32, u32)> {
+    if let Some(episodio) = ultimos_episodios()
+        .as_ref()
+        .and_then(|mapa| mapa.get(serie).copied())
+    {
+        return Some(episodio);
+    }
+    onde_parou_na_serie(serie)
+        .and_then(|(chave, _)| numeros_do_episodio(serie, &chave))
+}
+
+/// Onde ficou interrompida uma série; mantém compatibilidade com as marcas
+/// antigas, sem confundir temporadas de dois dígitos.
 pub fn onde_parou_na_serie(titulo: &str) -> Option<(String, Marca)> {
-    let prefixo = format!("{titulo} · ");
     let guarda = marcas();
     let mapa = guarda.as_ref()?;
-    let mut achados: Vec<(&String, &(f64, f64))> = mapa
-        .iter()
-        .filter(|(chave, _)| chave.starts_with(&prefixo))
-        .collect();
-    achados.sort_by(|a, b| a.0.cmp(b.0));
-    let (chave, (posicao, duracao)) = achados.pop()?;
-    Some((chave.clone(), Marca { posicao: *posicao, duracao: *duracao }))
+    let q = quando();
+    marca_da_serie(titulo, mapa, q.as_ref())
 }
 
 /// O que dá para continuar, do mais recente para o mais antigo.
@@ -226,5 +295,43 @@ pub fn falta(marca: &Marca) -> String {
         format!("faltam {horas} h {minutos:02} min")
     } else {
         format!("faltam {minutos} min")
+    }
+}
+
+#[cfg(test)]
+mod testes_episodios {
+    use super::*;
+
+    #[test]
+    fn interpreta_temporadas_e_episodios_sem_confundir_series() {
+        assert_eq!(numeros_do_episodio("American Dad", "American Dad · T12 E3"), Some((12, 3)));
+        assert_eq!(numeros_do_episodio("Família da Pesada", "Família da Pesada · T10 E11"), Some((10, 11)));
+        assert_eq!(numeros_do_episodio("American Dad", "Rick and Morty · T12 E3"), None);
+        assert_eq!(numeros_do_episodio("American Dad", "American Dad · T1"), None);
+    }
+
+    #[test]
+    fn usa_numeros_em_vez_de_ordem_alfabetica() {
+        let marcas = HashMap::from([
+            ("American Dad · T2 E9".to_string(), (240.0, 1200.0)),
+            ("American Dad · T10 E1".to_string(), (300.0, 1200.0)),
+            ("American Dad · T2 E10".to_string(), (320.0, 1200.0)),
+        ]);
+        let (chave, _) = marca_da_serie("American Dad", &marcas, None).unwrap();
+        assert_eq!(chave, "American Dad · T10 E1");
+    }
+
+    #[test]
+    fn prefere_o_episodio_visto_por_ultimo() {
+        let marcas = HashMap::from([
+            ("Família da Pesada · T10 E1".to_string(), (300.0, 1200.0)),
+            ("Família da Pesada · T2 E5".to_string(), (400.0, 1200.0)),
+        ]);
+        let horarios = HashMap::from([
+            ("Família da Pesada · T10 E1".to_string(), 100_i64),
+            ("Família da Pesada · T2 E5".to_string(), 200_i64),
+        ]);
+        let (chave, _) = marca_da_serie("Família da Pesada", &marcas, Some(&horarios)).unwrap();
+        assert_eq!(chave, "Família da Pesada · T2 E5");
     }
 }
