@@ -344,25 +344,32 @@ pub fn registrar_episodio(serie: &str, temporada: u32, episodio: u32) {
     registrar(serie, true, temporada, episodio);
 }
 
+/// Une logs de aparelhos sem duplicar reproduções já importadas.
+fn mesclar_eventos(local: &mut Vec<EventoHistorico>, remotos: &[EventoHistorico]) -> bool {
+    let mut ids: std::collections::HashSet<String> = local.iter().map(|e| e.id.clone()).collect();
+    let mut mudou = false;
+    for e in remotos.iter().take(MAX_EVENTOS) {
+        if e.id.is_empty() || e.id.len() > 100 || e.titulo.is_empty() || e.titulo.len() > 400
+            || e.quando <= 0 || e.episodio > 100000 || e.temporada > 100000 { continue; }
+        if ids.insert(e.id.clone()) {
+            local.push(e.clone());
+            mudou = true;
+        }
+    }
+    if mudou {
+        local.sort_by_key(|e| std::cmp::Reverse(e.quando));
+        local.truncate(MAX_EVENTOS);
+    }
+    mudou
+}
+
 /// Recebe eventos extras, opcionais, de outros aparelhos Saimo atualizados.
 /// O ID evita duplicar uma reprodução em trocas repetidas de pacote.
 pub fn importar_historico(remotos: &[EventoHistorico]) -> bool {
     let texto = {
         let mut guarda = historico_eventos();
         let local = guarda.as_mut().unwrap();
-        let mut ids: std::collections::HashSet<String> = local.iter().map(|e| e.id.clone()).collect();
-        let mut mudou = false;
-        for e in remotos.iter().take(MAX_EVENTOS) {
-            if e.id.len() > 100 || e.titulo.is_empty() || e.titulo.len() > 400
-                || e.quando <= 0 || e.episodio > 100000 || e.temporada > 100000 { continue; }
-            if ids.insert(e.id.clone()) {
-                local.push(e.clone());
-                mudou = true;
-            }
-        }
-        if !mudou { return false; }
-        local.sort_by_key(|e| std::cmp::Reverse(e.quando));
-        local.truncate(MAX_EVENTOS);
+        if !mesclar_eventos(local, remotos) { return false; }
         serde_json::to_string(local).ok()
     };
     if let Some(texto) = texto {
@@ -374,10 +381,9 @@ pub fn importar_historico(remotos: &[EventoHistorico]) -> bool {
 }
 
 /// Um cartão por título. Histórico completo, não apenas episódios pela metade.
-/// A ordenação dá prioridade ao recente, mas também valoriza títulos frequentes.
-pub fn resumo_historico() -> Vec<ResumoHistorico> {
+fn resumir_eventos(eventos: &[EventoHistorico]) -> Vec<ResumoHistorico> {
     let mut por_titulo: HashMap<(String, bool), ResumoHistorico> = HashMap::new();
-    for e in eventos_historico() {
+    for e in eventos {
         let chave = (e.titulo.clone(), e.serie);
         let resumo = por_titulo.entry(chave).or_insert_with(|| ResumoHistorico {
             titulo: e.titulo.clone(), serie: e.serie, temporada: e.temporada,
@@ -397,6 +403,12 @@ pub fn resumo_historico() -> Vec<ResumoHistorico> {
         pontuacao(b).total_cmp(&pontuacao(a))
     });
     lista
+}
+
+/// A ordenação prioriza o recente, com uma bonificação pequena para títulos
+/// abertos frequentemente, para manter sugestões úteis sem esconder novidades.
+pub fn resumo_historico() -> Vec<ResumoHistorico> {
+    resumir_eventos(&eventos_historico())
 }
 
 /// O que dá para continuar, do mais recente para o mais antigo.
@@ -449,15 +461,36 @@ mod testes_episodios {
     use super::*;
 
     #[test]
-    fn ordena_historico_por_reproducoes_e_recencia_sem_duplicar_eventos() {
+    fn historico_agrupa_episodios_de_uma_mesma_serie_e_conta_vezes() {
+        let e = |id: &str, serie: &str, t, ep, quando| EventoHistorico {
+            id: id.into(), titulo: serie.into(),
+            serie: true, temporada: t, episodio: ep, quando,
+        };
+        let eventos = vec![
+            e("1", "American Dad!", 3, 5, 1000),
+            e("2", "Família da Pesada", 2, 10, 1500),
+            e("3", "American Dad!", 3, 6, 2000),
+        ];
+        let resumo = resumir_eventos(&eventos);
+        assert_eq!(resumo.len(), 2);
+        let american = resumo.iter().find(|r| r.titulo == "American Dad!").unwrap();
+        assert_eq!(american.reproducoes, 2);
+        assert_eq!((american.temporada, american.episodio), (3, 6));
+    }
+
+    #[test]
+    fn importar_log_duas_vezes_nao_duplica_reproducoes() {
         let evento = EventoHistorico {
-            id: "teste-1".into(), titulo: "American Dad!".into(),
+            id: "aparelho-1-evento-7".into(), titulo: "American Dad!".into(),
             serie: true, temporada: 3, episodio: 5, quando: 1234
         };
+        let mut local = Vec::new();
+        assert!(mesclar_eventos(&mut local, std::slice::from_ref(&evento)));
+        assert!(!mesclar_eventos(&mut local, std::slice::from_ref(&evento)));
+        assert_eq!(local.len(), 1);
         let json = serde_json::to_string(&evento).unwrap();
-        let importado: EventoHistorico = serde_json::from_str(&json).unwrap();
-        assert_eq!(importado.titulo, "American Dad!");
-        assert_eq!((importado.temporada, importado.episodio), (3, 5));
+        let volta: EventoHistorico = serde_json::from_str(&json).unwrap();
+        assert_eq!((volta.temporada, volta.episodio), (3, 5));
     }
 
     #[test]
