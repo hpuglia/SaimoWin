@@ -311,9 +311,6 @@ impl EpisodioTocando {
     }
 }
 
-/// Quanto tempo o cartão do próximo episódio espera antes de seguir sozinho.
-pub const ESPERA_DO_PROXIMO: Duration = Duration::from_secs(10);
-
 /// A rádio no ar: toca no mesmo mpv do vídeo, só com o som.
 pub struct TocandoRadio {
     pub nome: String,
@@ -1341,6 +1338,8 @@ impl App {
     }
 
     fn tocar_episodio(&mut self, serie: &str, episodio: vod::Episodio, lista: Vec<vod::Episodio>) {
+        // Facilita identificar um episódio incorreto sem expor URLs das fontes.
+        diagnostico::etapa(&format!("episódio selecionado: {serie} T{} E{}", episodio.temporada, episodio.numero));
         let titulo = format!("{} · T{} E{}", serie, episodio.temporada, episodio.numero);
         let urls = self.fontes_preferidas(serie, &episodio.urls);
         // Salva imediatamente o episódio anterior antes de trocar (sem esperar
