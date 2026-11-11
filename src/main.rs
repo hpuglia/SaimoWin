@@ -105,7 +105,7 @@ fn main() -> eframe::Result<()> {
         padrao(info);
     }));
     let mut janela = egui::ViewportBuilder::default()
-        .with_title("Saimo TV")
+        .with_title("Saimo TV [TESTE hpuglia]")
         .with_inner_size([1280.0, 720.0])
         .with_min_inner_size([800.0, 480.0]);
     // No Linux o painel e o Wayland ligam a janela ao saimo-tv.desktop por este
@@ -128,7 +128,7 @@ fn main() -> eframe::Result<()> {
         ..Default::default()
     };
     diagnostico::etapa("criando a janela e o contexto OpenGL");
-    let resultado = eframe::run_native("Saimo TV", opcoes, Box::new(|cc| Ok(Box::new(App::novo(cc)))));
+    let resultado = eframe::run_native("Saimo TV [TESTE hpuglia]", opcoes, Box::new(|cc| Ok(Box::new(App::novo(cc)))));
     if let Err(e) = &resultado {
         diagnostico::erro_fatal(&e.to_string());
     }
@@ -353,6 +353,10 @@ struct App {
     volume: i32,
     mudo: bool,
     pausado: bool,
+    /// Marcacoes externas de abertura podem estar incorretas: so sugerir se optou.
+    pub sugerir_pulos: bool,
+    /// Avancar somente quando a fonte realmente encerrar; desligado por padrao.
+    pub proximo_automatico: bool,
     logos: HashMap<String, Option<egui::TextureHandle>>,
     /// Chave no mapa, endereço e o lado máximo em pixels.
     pedidos_de_logo: Vec<(String, String, u32)>,
@@ -680,6 +684,10 @@ impl App {
             volume: 100,
             mudo: false,
             pausado: false,
+            sugerir_pulos: std::fs::read_to_string(catalogo::pasta().join("sugerir-pulos.txt"))
+                .ok().is_some_and(|v| v.trim() == "1"),
+            proximo_automatico: std::fs::read_to_string(catalogo::pasta().join("proximo-automatico.txt"))
+                .ok().is_some_and(|v| v.trim() == "1"),
             logos: HashMap::new(),
             pedidos_de_logo: Vec::new(),
             ordem_das_capas: std::collections::VecDeque::new(),
@@ -1455,6 +1463,7 @@ impl App {
 
     /// O trecho que dá para pular agora, se houver.
     pub fn pulo_na_tela(&self) -> Option<pulos::Trecho> {
+        if !self.sugerir_pulos { return None; }
         let t = self.tocando_vod.as_ref()?;
         let (posicao, duracao) = t.visto;
         t.marcas.as_ref()?.em(posicao, duracao).cloned()
@@ -1470,16 +1479,14 @@ impl App {
         }
     }
 
-    /// O episódio seguinte, quando o cartão dele está à vista.
-    pub fn proximo_na_tela(&self) -> Option<(vod::Episodio, u64)> {
+    /// Exibe o proximo episodio so no fim real da duracao conhecida. Nao usa
+    /// marcacoes externas: elas frequentemente antecipam os creditos.
+    pub fn proximo_na_tela(&self) -> Option<vod::Episodio> {
+        if !self.proximo_automatico { return None; }
         let t = self.tocando_vod.as_ref()?;
-        let desde = t.proximo_desde?;
-        if t.proximo_dispensado {
-            return None;
-        }
-        let seguinte = t.episodio.as_ref()?.seguinte()?;
-        let resta = ESPERA_DO_PROXIMO.saturating_sub(desde.elapsed()).as_secs() + 1;
-        Some((seguinte, resta))
+        t.proximo_desde?;
+        if t.proximo_dispensado { return None; }
+        t.episodio.as_ref()?.seguinte()
     }
 
     pub fn tocar_proximo(&mut self) -> bool {
@@ -1524,25 +1531,19 @@ impl App {
             t.visto = v;
         }
         let (posicao, duracao) = t.visto;
-        let tem_seguinte = t.episodio.as_ref().and_then(|e| e.seguinte()).is_some();
-        if !tem_seguinte || t.proximo_dispensado {
+        if !self.proximo_automatico || t.proximo_dispensado
+            || t.episodio.as_ref().and_then(|e| e.seguinte()).is_none() {
+            t.proximo_desde = None;
             return;
         }
-        // Os créditos marcados; sem marca, os últimos 30 s de um episódio.
-        let creditos = t
-            .marcas
-            .as_ref()
-            .and_then(|m| m.creditos())
-            .unwrap_or(if duracao > 300.0 { duracao - 30.0 } else { f64::MAX });
-        if posicao >= creditos && t.proximo_desde.is_none() {
+        // O temporizador nao inicia a proxima reproducao. O mpv avisa
+        // o termino REAL com Aviso::Fim; marcas de creditos nao sao confiaveis.
+        let perto_do_fim = duracao > 0.0 && posicao >= (duracao - 25.0).max(0.0)
+            && posicao <= duracao;
+        if perto_do_fim && t.proximo_desde.is_none() {
             t.proximo_desde = Some(Instant::now());
-        } else if posicao < creditos - 5.0 {
-            // Voltou para antes dos créditos: o cartão some.
+        } else if !perto_do_fim {
             t.proximo_desde = None;
-        }
-        let venceu = t.proximo_desde.map(|d| d.elapsed() >= ESPERA_DO_PROXIMO).unwrap_or(false);
-        if venceu && !self.pausado {
-            self.tocar_proximo();
         }
     }
 
@@ -1891,7 +1892,7 @@ impl App {
                         let cedo = visto.0 < 30.0 || (visto.1 > 0.0 && visto.1 < 120.0);
                         if acabou && cedo {
                             self.proxima_fonte_vod(&format!("terminou em {} s", visto.0 as u64));
-                        } else if acabou && self.tocar_proximo() {
+                        } else if acabou && self.proximo_automatico && self.tocar_proximo() {
                             // Série: o episódio seguinte já está a caminho.
                         } else if acabou {
                             // Chegou ao fim: nada a retomar da próxima vez.
@@ -2877,6 +2878,26 @@ impl App {
 
     pub fn controles_visiveis(&self) -> bool {
         Instant::now() < self.controles_ate || self.pausado
+    }
+
+    pub fn alternar_sugestoes_de_pulo(&mut self) {
+        self.sugerir_pulos = !self.sugerir_pulos;
+        let _ = std::fs::write(
+            catalogo::pasta().join("sugerir-pulos.txt"),
+            if self.sugerir_pulos { "1" } else { "0" },
+        );
+    }
+
+    pub fn alternar_proximo_automatico(&mut self) {
+        self.proximo_automatico = !self.proximo_automatico;
+        let _ = std::fs::write(
+            catalogo::pasta().join("proximo-automatico.txt"),
+            if self.proximo_automatico { "1" } else { "0" },
+        );
+        if let Some(t) = self.tocando_vod.as_mut() {
+            // O usuario pode desligar a qualquer momento, sem corrida com o timer.
+            t.proximo_desde = None;
+        }
     }
 
     pub fn alternar_pausa(&mut self) {
