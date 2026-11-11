@@ -1326,7 +1326,9 @@ impl App {
     fn tocar_episodio(&mut self, serie: &str, episodio: vod::Episodio, lista: Vec<vod::Episodio>) {
         let titulo = format!("{} · T{} E{}", serie, episodio.temporada, episodio.numero);
         let urls = self.fontes_preferidas(serie, &episodio.urls);
-        // Some antes de tocar: senão a troca de título apagaria o episódio.
+        // Salva imediatamente o episódio anterior antes de trocar (sem esperar
+        // o intervalo de 15 s); depois a nova reprodução terá seu próprio título.
+        self.guardar_progresso(true);
         self.tocando_vod = None;
         self.tocar_vod(titulo.clone(), urls, 0, true);
         let Some(t) = self.tocando_vod.as_mut() else { return };
@@ -1471,9 +1473,11 @@ impl App {
         let Some(t) = self.tocando_vod.as_ref() else { return false };
         let Some(ep) = t.episodio.clone() else { return false };
         let Some(seguinte) = ep.seguinte() else { return false };
-        // O que acabou não fica no "continuar assistindo".
-        progresso::esquecer(&t.titulo);
+        // A troca deve salvar a posição do episódio anterior primeiro; depois
+        // apagamos a marca do episódio concluído para não oferecê-lo novamente.
+        let anterior = t.titulo.clone();
         self.tocar_episodio(&ep.serie, seguinte, ep.lista);
+        progresso::esquecer(&anterior);
         true
     }
 
@@ -1847,6 +1851,11 @@ impl App {
                                     (t.titulo.clone(), t.fonte, t.desde.elapsed().as_millis());
                                 let url = t.urls.get(fonte).cloned().unwrap_or_default();
                                 telemetria::tocou("vod", &titulo, &url, fonte + 1, ms);
+                                // Registrar também episódios completos: sem marca parcial,
+                                // a página da série voltava a sugerir T1 E1.
+                                if let Some(ep) = t.episodio.as_ref() {
+                                    progresso::lembrar_episodio(&ep.serie, ep.temporada, ep.numero);
+                                }
                                 self.retomar();
                             }
                         }
