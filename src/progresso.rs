@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 
 /// Menos de um minuto não é "onde parou", é ter aberto e desistido.
-const MINIMO: f64 = 60.0;
+const MINIMO: f64 = 15.0;
 /// A dois minutos do fim está visto: retomar ali só irrita.
 const SOBRA: f64 = 120.0;
 
@@ -150,7 +150,9 @@ pub fn salvar(titulo: &str, posicao: f64, duracao: f64) {
     if titulo.is_empty() || !posicao.is_finite() || duracao < 0.0 {
         return;
     }
-    let no_fim = duracao > 0.0 && posicao > duracao - SOBRA;
+    // Episódios curtos não podem perder o progresso dois minutos antes do fim.
+    let sobra = if duracao > 0.0 { (duracao * 0.03).clamp(15.0, SOBRA) } else { SOBRA };
+    let no_fim = duracao > 0.0 && posicao >= duracao - sobra;
     {
         let mut guarda = marcas();
         let mapa = guarda.as_mut().unwrap();
@@ -231,17 +233,21 @@ fn marca_da_serie(
         .map(|(chave, marca, _)| (chave, marca))
 }
 
-/// Último episódio efetivamente reproduzido. Para instalações antigas, usa
-/// as marcas de progresso existentes até que um episódio novo seja confirmado.
+/// Último episódio registrado no histórico, inclusive o que terminou.
+/// Para instalações antigas ainda sem histórico, usa o mapa anterior e marcas.
 pub fn episodio_da_serie(serie: &str) -> Option<(u32, u32)> {
-    if let Some(episodio) = ultimos_episodios()
-        .as_ref()
-        .and_then(|mapa| mapa.get(serie).copied())
-    {
+    if let Some(episodio) = historico_eventos().iter()
+        .filter(|e| e.serie && e.titulo == serie)
+        .max_by_key(|e| e.quando)
+        .map(|e| (e.temporada, e.episodio)) {
         return Some(episodio);
     }
-    onde_parou_na_serie(serie)
-        .and_then(|(chave, _)| numeros_do_episodio(serie, &chave))
+    if let Some(episodio) = ultimos_episodios()
+        .as_ref()
+        .and_then(|mapa| mapa.get(serie).copied()) {
+        return Some(episodio);
+    }
+    onde_parou_na_serie(serie).and_then(|(chave, _)| numeros_do_episodio(serie, &chave))
 }
 
 /// Onde ficou interrompida uma série; mantém compatibilidade com as marcas
@@ -251,6 +257,141 @@ pub fn onde_parou_na_serie(titulo: &str) -> Option<(String, Marca)> {
     let mapa = guarda.as_ref()?;
     let q = quando();
     marca_da_serie(titulo, mapa, q.as_ref())
+}
+
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct EventoHistorico {
+    pub id: String,
+    pub titulo: String,
+    pub serie: bool,
+    pub temporada: u32,
+    pub episodio: u32,
+    pub quando: i64,
+}
+
+#[derive(Clone, Debug)]
+pub struct ResumoHistorico {
+    pub titulo: String,
+    pub serie: bool,
+    pub temporada: u32,
+    pub episodio: u32,
+    pub ultimo_em: i64,
+    pub reproducoes: usize,
+}
+
+/// Log pequeno de reproduções com IDs exclusivos. Sincronizar o mesmo log de
+/// dois aparelhos não multiplica as contagens, pois a fusão elimina IDs repetidos.
+static HISTORICO: Mutex<Option<Vec<EventoHistorico>>> = Mutex::new(None);
+const MAX_EVENTOS: usize = 300;
+
+fn arquivo_historico() -> std::path::PathBuf {
+    crate::catalogo::pasta().join("historico-vod.json")
+}
+
+fn historico_eventos() -> std::sync::MutexGuard<'static, Option<Vec<EventoHistorico>>> {
+    let mut guarda = HISTORICO.lock().unwrap();
+    if guarda.is_none() {
+        let eventos = std::fs::read_to_string(arquivo_historico()).ok()
+            .and_then(|s| serde_json::from_str::<Vec<EventoHistorico>>(&s).ok())
+            .unwrap_or_default();
+        *guarda = Some(eventos);
+    }
+    guarda
+}
+
+pub fn eventos_historico() -> Vec<EventoHistorico> {
+    historico_eventos().as_ref().cloned().unwrap_or_default()
+}
+
+fn id_novo() -> String {
+    use std::hash::{BuildHasher, Hasher};
+    let aleatorio = std::collections::hash_map::RandomState::new().build_hasher().finish();
+    format!("{:x}-{aleatorio:016x}", agora_ms())
+}
+
+fn registrar(titulo: &str, serie: bool, temporada: u32, episodio: u32) {
+    if titulo.is_empty() { return; }
+    let evento = EventoHistorico {
+        id: id_novo(), titulo: titulo.to_string(), serie, temporada, episodio, quando: agora_ms()
+    };
+    let texto = {
+        let mut guarda = historico_eventos();
+        let lista = guarda.as_mut().unwrap();
+        lista.push(evento);
+        lista.sort_by_key(|e| std::cmp::Reverse(e.quando));
+        lista.truncate(MAX_EVENTOS);
+        serde_json::to_string(lista).ok()
+    };
+    if let Some(texto) = texto {
+        let _ = std::fs::write(arquivo_historico(), texto);
+        VERSAO.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+pub fn registrar_filme(titulo: &str) {
+    registrar(titulo, false, 0, 0);
+}
+
+pub fn registrar_episodio(serie: &str, temporada: u32, episodio: u32) {
+    if serie.is_empty() || episodio == 0 { return; }
+    lembrar_episodio(serie, temporada, episodio);
+    registrar(serie, true, temporada, episodio);
+}
+
+/// Recebe eventos extras, opcionais, de outros aparelhos Saimo atualizados.
+/// O ID evita duplicar uma reprodução em trocas repetidas de pacote.
+pub fn importar_historico(remotos: &[EventoHistorico]) -> bool {
+    let texto = {
+        let mut guarda = historico_eventos();
+        let local = guarda.as_mut().unwrap();
+        let mut ids: std::collections::HashSet<String> = local.iter().map(|e| e.id.clone()).collect();
+        let mut mudou = false;
+        for e in remotos.iter().take(MAX_EVENTOS) {
+            if e.id.len() > 100 || e.titulo.is_empty() || e.titulo.len() > 400
+                || e.quando <= 0 || e.episodio > 100000 || e.temporada > 100000 { continue; }
+            if ids.insert(e.id.clone()) {
+                local.push(e.clone());
+                mudou = true;
+            }
+        }
+        if !mudou { return false; }
+        local.sort_by_key(|e| std::cmp::Reverse(e.quando));
+        local.truncate(MAX_EVENTOS);
+        serde_json::to_string(local).ok()
+    };
+    if let Some(texto) = texto {
+        let _ = std::fs::write(arquivo_historico(), texto);
+        VERSAO.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        return true;
+    }
+    false
+}
+
+/// Um cartão por título. Histórico completo, não apenas episódios pela metade.
+/// A ordenação dá prioridade ao recente, mas também valoriza títulos frequentes.
+pub fn resumo_historico() -> Vec<ResumoHistorico> {
+    let mut por_titulo: HashMap<(String, bool), ResumoHistorico> = HashMap::new();
+    for e in eventos_historico() {
+        let chave = (e.titulo.clone(), e.serie);
+        let resumo = por_titulo.entry(chave).or_insert_with(|| ResumoHistorico {
+            titulo: e.titulo.clone(), serie: e.serie, temporada: e.temporada,
+            episodio: e.episodio, ultimo_em: e.quando, reproducoes: 0
+        });
+        resumo.reproducoes += 1;
+        if e.quando >= resumo.ultimo_em {
+            resumo.ultimo_em = e.quando;
+            resumo.temporada = e.temporada;
+            resumo.episodio = e.episodio;
+        }
+    }
+    let mut lista: Vec<ResumoHistorico> = por_titulo.into_values().collect();
+    lista.sort_by(|a, b| {
+        let pontuacao = |x: &ResumoHistorico| x.ultimo_em as f64
+            + (x.reproducoes as f64).ln_1p() * 6.0 * 60.0 * 60.0 * 1000.0;
+        pontuacao(b).total_cmp(&pontuacao(a))
+    });
+    lista
 }
 
 /// O que dá para continuar, do mais recente para o mais antigo.
@@ -301,6 +442,18 @@ pub fn falta(marca: &Marca) -> String {
 #[cfg(test)]
 mod testes_episodios {
     use super::*;
+
+    #[test]
+    fn ordena_historico_por_reproducoes_e_recencia_sem_duplicar_eventos() {
+        let evento = EventoHistorico {
+            id: "teste-1".into(), titulo: "American Dad!".into(),
+            serie: true, temporada: 3, episodio: 5, quando: 1234
+        };
+        let json = serde_json::to_string(&evento).unwrap();
+        let importado: EventoHistorico = serde_json::from_str(&json).unwrap();
+        assert_eq!(importado.titulo, "American Dad!");
+        assert_eq!((importado.temporada, importado.episodio), (3, 5));
+    }
 
     #[test]
     fn interpreta_temporadas_e_episodios_sem_confundir_series() {
