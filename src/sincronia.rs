@@ -85,6 +85,9 @@ impl App {
         json!({
             "t": "dados",
             "progresso": lista,
+            // Campo opcional novo: clientes antigos podem ignorar sem quebrar
+            // o protocolo de progresso/favoritos da TV Box e do celular.
+            "historico": progresso::eventos_historico(),
             "favTitulos": fav_titulos,
             "favCanais": self.favoritos,
             "listas": {
@@ -107,6 +110,13 @@ impl App {
     pub(crate) fn aplicar_dados(&mut self, msg: &Value) {
         let num = |v: &Value, campo: &str| v.get(campo).and_then(Value::as_f64).unwrap_or(0.0);
         let texto = |v: &Value, campo: &str| v.get(campo).and_then(Value::as_str).unwrap_or("").to_string();
+
+        if let Some(remotos) = msg.get("historico") {
+            // Sincronização aditiva: IDs iguais não criam reproduções extras.
+            if let Ok(eventos) = serde_json::from_value::<Vec<progresso::EventoHistorico>>(remotos.clone()) {
+                progresso::importar_historico(&eventos);
+            }
+        }
 
         for p in msg.get("progresso").and_then(Value::as_array).into_iter().flatten() {
             let titulo = texto(p, "titulo");
