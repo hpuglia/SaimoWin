@@ -35,10 +35,6 @@ pub fn tela(app: &mut App, ui: &mut egui::Ui) {
     if !app.pip && por_cima && app.tocando_vod.is_none() {
         topo::menu(app, ui, true);
     }
-    // Sem nada à vista sobre o vídeo, o ponteiro some também.
-    if !por_cima && !app.pip && (app.tocando.is_some() || app.tocando_vod.is_some()) {
-        ui.ctx().set_cursor_icon(egui::CursorIcon::None);
-    }
     if app.guia_aberto && app.tocando_vod.is_none() {
         guia(app, ui);
         return;
