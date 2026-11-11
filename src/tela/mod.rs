@@ -232,12 +232,14 @@ pub fn desenhar(app: &mut App, ui: &mut egui::Ui) {
     // Decidir o cursor por último: on_hover_cursor dos botões pode sobrescrever
     // CursorIcon::None se o mouse ficar parado sobre um controle que sumiu.
     let video_ativo = app.aba == Aba::Canais && (app.tocando.is_some() || app.tocando_vod.is_some());
-    let modal_aberto = app.lista_aberta
-        || app.guia_aberto
+    // Lista de canais e guia so aparecem na TV ao vivo, nao em filmes.
+    // Os estados podem ficar true enquanto o painel nao esta desenhado:
+    // bloquea-los globalmente deixava o cursor permanentemente visivel no VOD.
+    let esta_no_vod = app.tocando_vod.is_some();
+    let modal_aberto = ((!esta_no_vod) && (app.lista_aberta || app.guia_aberto))
         || app.episodios_no_player
         || app.ajuda_aberta
         || app.dialogo_listas.is_some()
-        || app.minhas_dialogo.is_some()
         || app.nova_versao.is_some()
         || !app.aprovacoes.is_empty();
 
