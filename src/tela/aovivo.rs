@@ -649,7 +649,7 @@ fn pulos_na_tela(app: &mut App, ui: &mut egui::Ui, janela: Rect) {
         ui.ctx().request_repaint_after(Duration::from_millis(250));
         return;
     }
-    let Some((seguinte, resta)) = app.proximo_na_tela() else { return };
+    let Some(seguinte) = app.proximo_na_tela() else { return };
     let serie = app.tocando_vod.as_ref().and_then(|t| t.episodio.as_ref()).map(|e| e.serie.clone()).unwrap_or_default();
     let info = app
         .pedir_temporada(&serie, seguinte.temporada)
@@ -667,7 +667,7 @@ fn pulos_na_tela(app: &mut App, ui: &mut egui::Ui, janela: Rect) {
     }
     let x = imagem.right() + 16.0;
     let largura = caixa.right() - 18.0 - x;
-    pintor.text(Pos2::new(x, caixa.top() + 18.0), Align2::LEFT_TOP, format!("Próximo episódio em {resta} s"), normal(14.0), ACENTO);
+    pintor.text(Pos2::new(x, caixa.top() + 18.0), Align2::LEFT_TOP, "Próximo episódio ao terminar".to_string(), normal(14.0), ACENTO);
     let nome = info.as_ref().map(|e| e.nome.clone()).filter(|n| !n.is_empty());
     let titulo = match nome {
         Some(n) => format!("T{} E{} · {n}", seguinte.temporada, seguinte.numero),
