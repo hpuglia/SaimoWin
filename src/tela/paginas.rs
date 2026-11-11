@@ -295,29 +295,63 @@ pub(super) fn cartao_de_titulo(app: &App, item: ItemNaTela, capa: Option<String>
     c
 }
 
-/// "Continue assistindo", só com o que existe no acervo comum: o título
-/// reservado não pode reaparecer por aqui sem o código.
+/// Histórico inteligente: um cartão por título, sem perder episódios
+/// concluídos e sem transformar cada temporada em uma capa repetida.
+/// Não exibe conteúdos reservados que não estão no acervo comum.
 fn continuar(app: &App, filtro: impl Fn(bool) -> bool) -> Option<Fila> {
     let no_acervo: std::collections::HashMap<&str, &crate::vod::Achado> =
         app.acervo.iter().map(|a| (a.titulo.as_str(), a)).collect();
-    let cartoes: Vec<Cartao> = progresso::pendentes()
-        .into_iter()
-        .filter_map(|(rotulo, marca)| {
+    let mut vistos = std::collections::HashSet::new();
+    let mut cartoes = Vec::new();
+    for registro in progresso::resumo_historico() {
+        let nome = registro.titulo;
+        let Some(achado) = no_acervo.get(nome.as_str()) else { continue };
+        if achado.serie != registro.serie || !filtro(achado.serie) { continue; }
+        if !vistos.insert(nome.clone()) { continue; }
+        let item = ItemNaTela { titulo: nome.clone(), detalhe: achado.ano.clone(), serie: achado.serie, letra: achado.letra.clone() };
+        let mut c = Cartao::novo(nome.clone(), Imagem::Capa(nome.clone(), achado.serie),
+            Acao::Continuar(item), heroi_titulo(&nome, achado.serie));
+        let chave = if achado.serie {
+            format!("{nome} · T{} E{}", registro.temporada, registro.episodio)
+        } else {
+            nome.clone()
+        };
+        let marca = progresso::onde_parou(&chave);
+        c.progresso = marca.as_ref().map(progresso::fracao).filter(|p| *p > 0.0);
+        let detalhes = if achado.serie {
+            format!("T{} E{}", registro.temporada, registro.episodio)
+        } else {
+            "Filme".to_string()
+        };
+        let repeticoes = if registro.reproducoes > 1 {
+            format!(" · {} reproduções", registro.reproducoes)
+        } else { String::new() };
+        c.sub = match marca {
+            Some(m) => format!("{detalhes} · {}{repeticoes}", progresso::falta(&m)),
+            None => format!("{detalhes}{repeticoes}"),
+        };
+        c.favorito = app.favoritos_vod.contains(&nome);
+        cartoes.push(c);
+        if cartoes.len() == 20 { break; }
+    }
+    // Progresso de instalações anteriores: até que sejam reproduzidos de novo,
+    // continuam visíveis sem duplicar uma série que já entrou pelo histórico.
+    if cartoes.len() < 20 {
+        for (rotulo, marca) in progresso::pendentes() {
             let nome = rotulo.split(" · ").next().unwrap_or(&rotulo).to_string();
-            let achado = no_acervo.get(nome.as_str())?;
-            if !filtro(achado.serie) {
-                return None;
-            }
+            let Some(achado) = no_acervo.get(nome.as_str()) else { continue };
+            if !filtro(achado.serie) || !vistos.insert(nome.clone()) { continue; }
             let item = ItemNaTela { titulo: nome.clone(), detalhe: achado.ano.clone(), serie: achado.serie, letra: achado.letra.clone() };
-            let mut c = Cartao::novo(rotulo.clone(), Imagem::Capa(nome.clone(), achado.serie), Acao::Continuar(item), heroi_titulo(&nome, achado.serie));
+            let mut c = Cartao::novo(nome.clone(), Imagem::Capa(nome.clone(), achado.serie),
+                Acao::Continuar(item), heroi_titulo(&nome, achado.serie));
             c.progresso = Some(progresso::fracao(&marca).max(0.02));
             c.sub = progresso::falta(&marca);
             c.favorito = app.favoritos_vod.contains(&nome);
-            Some(c)
-        })
-        .take(20)
-        .collect();
-    Some(Fila { titulo: "Continue assistindo".into(), tipo: Tipo::Capa, cartoes })
+            cartoes.push(c);
+            if cartoes.len() == 20 { break; }
+        }
+    }
+    Some(Fila { titulo: "Seu histórico · Continue ou reveja".into(), tipo: Tipo::Capa, cartoes })
 }
 
 /// Os canais com o que passa agora: o último assistido e os favoritos, ou os
