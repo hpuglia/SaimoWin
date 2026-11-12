@@ -1449,8 +1449,8 @@ pub fn dialogo_agendamento(app: &mut App, ctx: &egui::Context) {
     let canal = app.tocando.as_ref()
         .and_then(|t| app.canais.get(t.canal))
         .map(|c| c.nome.clone()).unwrap_or_default();
-    let largura = (ctx.available_rect().width() - 30.0).clamp(260.0, 350.0);
-    let altura = (ctx.available_rect().height() - 100.0).max(190.0);
+    let largura = (ctx.content_rect().width() - 30.0).clamp(260.0, 350.0);
+    let altura = (ctx.content_rect().height() - 100.0).max(190.0);
     let mut calendario_aberto = app.agendamento_calendario_aberto;
     egui::Window::new("Agendar gravação")
         .id(egui::Id::new("agendamento-dvr"))
@@ -1564,8 +1564,8 @@ pub fn dialogo_lista_agendamentos(app: &mut App, ctx: &egui::Context) {
     let mut cancelar_indice = None;
     let mut novo = false;
     let mut fechar = false;
-    let largura = (ctx.available_rect().width() - 30.0).clamp(270.0, 385.0);
-    let altura = (ctx.available_rect().height() - 105.0).max(170.0);
+    let largura = (ctx.content_rect().width() - 30.0).clamp(270.0, 385.0);
+    let altura = (ctx.content_rect().height() - 105.0).max(170.0);
     egui::Window::new("Gravações agendadas")
         .id(egui::Id::new("dvr-lista-agendamentos"))
         .anchor(Align2::CENTER_CENTER, egui::Vec2::ZERO)
