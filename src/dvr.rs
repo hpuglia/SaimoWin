@@ -138,8 +138,17 @@ struct GravacaoAtiva {
     parada_solicitada: bool,
 }
 
+struct GravacaoNoPlayer {
+    canal: String,
+    arquivo: PathBuf,
+    fim_em: Option<std::time::Instant>,
+}
+
 pub struct Dvr {
     ativos: Vec<GravacaoAtiva>,
+    /// Gravação manual da fonte já reproduzida pelo mpv. Diferentemente
+    /// do FFmpeg independente, acompanha o canal aberto na tela.
+    no_player: Option<GravacaoNoPlayer>,
     agendados: Vec<Agendamento>,
 }
 
@@ -148,7 +157,7 @@ impl Dvr {
         let agendados = fs::read_to_string(catalogo::pasta().join(AGENDA)).ok()
             .and_then(|s| serde_json::from_str::<Vec<Agendamento>>(&s).ok())
             .unwrap_or_default();
-        Self { ativos: Vec::new(), agendados }
+        Self { ativos: Vec::new(), no_player: None, agendados }
     }
 
     fn salvar_agenda(&self) {
@@ -157,12 +166,45 @@ impl Dvr {
         }
     }
 
-    pub fn gravando(&self) -> bool { !self.ativos.is_empty() }
+    pub fn gravando(&self) -> bool { !self.ativos.is_empty() || self.no_player.is_some() }
     pub fn ha_agenda(&self) -> bool { self.agendados.iter().any(|a| !a.executado) }
     pub fn quantidade_agendada(&self) -> usize { self.agendados.iter().filter(|a| !a.executado).count() }
     pub fn ativo_no_canal(&self, nome: &str) -> bool {
         self.ativos.iter().any(|a| a.canal == nome)
+            || self.no_player.as_ref().is_some_and(|r| r.canal == nome)
     }
+
+    /// Gravação manual confiando no demuxer do próprio player, inclusive em
+    /// playlists HLS disfarçadas de .txt. Não abre uma nova conexão FFmpeg.
+    /// Precisa manter este canal em reprodução; não serve para agendamento
+    /// independente, que continua utilizando FFmpeg.
+    pub fn iniciar_no_player(
+        &mut self, canal: &str, mpv: &mpv::Mpv, duracao_s: Option<u64>,
+    ) -> Result<PathBuf, String> {
+        if self.no_player.is_some() {
+            return Err("Já existe gravação do canal em reprodução".into());
+        }
+        if self.ativo_no_canal(canal) {
+            return Err("Este canal já está sendo gravado".into());
+        }
+        let arquivo = arquivo_novo(canal, "mkv", "Gravacoes")?;
+        mpv.gravar_fluxo(Some(&arquivo))?;
+        self.no_player = Some(GravacaoNoPlayer {
+            canal: canal.into(),
+            arquivo: arquivo.clone(),
+            fim_em: duracao_s.map(|s| std::time::Instant::now() + std::time::Duration::from_secs(s)),
+        });
+        Ok(arquivo)
+    }
+
+    pub fn parar_no_player(&mut self, mpv: &mpv::Mpv) -> Result<Option<PathBuf>, String> {
+        let Some(ativo) = self.no_player.as_ref() else { return Ok(None) };
+        mpv.gravar_fluxo(None)?;
+        let arquivo = ativo.arquivo.clone();
+        self.no_player = None;
+        Ok(Some(arquivo))
+    }
+
 
     pub fn iniciar(&mut self, canal: &catalogo::Canal, indice: usize, duracao_s: Option<u64>) -> Result<PathBuf, String> {
         if self.ativos.len() >= 3 { return Err("Limite de 3 gravações simultâneas.".into()); }
@@ -246,8 +288,19 @@ impl Dvr {
     }
 
     /// Chamar pela interface regularmente, mesmo se o usuário não estiver no canal.
-    pub fn atualizar(&mut self, canais: &[catalogo::Canal]) -> Vec<String> {
+    pub fn atualizar(&mut self, canais: &[catalogo::Canal], mpv: Option<&mpv::Mpv>) -> Vec<String> {
         let mut avisos = Vec::new();
+        let vencida = self.no_player.as_ref()
+            .and_then(|r| r.fim_em).is_some_and(|fim| std::time::Instant::now() >= fim);
+        if vencida {
+            if let Some(mpv) = mpv {
+                match self.parar_no_player(mpv) {
+                    Ok(Some(p)) => avisos.push(format!("Gravação manual finalizada: {}", p.display())),
+                    Err(e) => avisos.push(format!("Não foi possível finalizar a gravação: {e}")),
+                    Ok(None) => {}
+                }
+            }
+        }
         let mut i = 0;
         while i < self.ativos.len() {
             match self.ativos[i].filho.try_wait() {
