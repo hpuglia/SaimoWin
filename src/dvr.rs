@@ -279,7 +279,7 @@ impl Dvr {
                 i += 1;
             } else {
                 let concluida = self.ativos.remove(i);
-                if concluida.tem_dados() {
+                if concluida.tem_dados() && concluida.tem_finalizacao() {
                     self.processando.insert(concluida.canal.clone());
                     self.recente.insert(
                         concluida.canal, (FaseGravacao::Processando, Instant::now())
