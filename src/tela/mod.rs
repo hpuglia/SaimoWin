@@ -229,6 +229,7 @@ pub fn desenhar(app: &mut App, ui: &mut egui::Ui) {
         janelas::listas(app, ctx);
     }
     aovivo::dialogo_agendamento(app, ctx);
+    aovivo::dialogo_gravacao_manual(app, ctx);
 
     // Decidir o cursor por último: on_hover_cursor dos botões pode sobrescrever
     // CursorIcon::None se o mouse ficar parado sobre um controle que sumiu.
@@ -241,6 +242,7 @@ pub fn desenhar(app: &mut App, ui: &mut egui::Ui) {
         || app.episodios_no_player
         || app.ajuda_aberta
         || app.agendamento_aberto
+        || app.gravacao_dialogo_aberto
         || app.dialogo_listas.is_some()
         || app.nova_versao.is_some()
         || !app.aprovacoes.is_empty();
