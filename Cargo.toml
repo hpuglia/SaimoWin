@@ -13,6 +13,11 @@ libloading = "0.9"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
 serde = { version = "1.0.229", features = ["derive"] }
 chrono = "0.4.45"
+# Controle opcional do OBS Studio para gravar a janela renderizada com audio.
+# WebSocket restrito a 127.0.0.1 e senha apenas em memoria.
+tungstenite = { version = "0.24", default-features = false, features = ["handshake"] }
+sha2 = "0.10"
+base64 = "0.22"
 
 # Os controles de mídia do Windows (o quadro de "tocando agora" do sistema).
 [target.'cfg(windows)'.dependencies]
