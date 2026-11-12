@@ -5,9 +5,8 @@ use crate::{catalogo, epg, mpv};
 use chrono::{Local, NaiveDateTime, TimeZone};
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Command, Stdio};
 
 const CONFIG: &str = "gravacoes-config.json";
 const AGENDA: &str = "gravacoes-agendadas.json";
@@ -103,7 +102,7 @@ pub fn captura(mpv: &mpv::Mpv, canal: &str) -> Result<PathBuf, String> {
     Ok(arquivo)
 }
 
-/// Procura uma cópia do ffmpeg distribuída junto do Saimo antes do PATH.
+/// Procura o ffmpeg portátil distribuído junto do Saimo; sem exigir OBS.
 fn ffmpeg() -> Result<PathBuf, String> {
     let nome = if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" };
     if let Some(p) = std::env::current_exe().ok().and_then(|e| e.parent().map(|d| d.join(nome))) {
@@ -120,6 +119,7 @@ fn ffmpeg() -> Result<PathBuf, String> {
     else { Err("FFmpeg não encontrado. Coloque ffmpeg ao lado do executável ou instale-o no PATH.".into()) }
 }
 
+
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Agendamento {
     pub canal: String,
@@ -130,43 +130,12 @@ pub struct Agendamento {
     pub executado: bool,
 }
 
-struct GravacaoAtiva {
-    canal: String,
-    arquivo: PathBuf,
-    log: PathBuf,
-    filho: Child,
-    parada_solicitada: bool,
-}
-
-struct GravacaoNoPlayer {
-    canal: String,
-    arquivo: PathBuf,
-    fim_em: Option<std::time::Instant>,
-    desde: std::time::Instant,
-    avisou_sem_dados: bool,
-    confirmou_dados: bool,
-}
-
-/// MPV stream-record utiliza o contêiner indicado pela extensão. Para HLS e
-/// MPEG-TS o formato .ts é mais compatível que .mkv com pacotes originais.
-/// Em casos não reconhecidos de TV ao vivo, tentar .ts primeiro; não muda
-/// FFmpeg de agendamentos (que continua independente).
-fn extensao_da_transmissao(formato: Option<&str>) -> &'static str {
-    let formato = formato.unwrap_or("").to_ascii_lowercase();
-    if formato.contains("matroska") || formato.contains("webm")
-        || formato.contains("mp4") || formato.contains("mov,") {
-        "mkv"
-    } else {
-        "ts"
-    }
-}
-
+/// O DVR nunca recodifica vídeo nem áudio; cada sessão contém partes
+/// independentes. Não precisa manter a janela Saimo visível para continuar.
 pub struct Dvr {
-    ativos: Vec<GravacaoAtiva>,
-    /// Gravação manual da fonte já reproduzida pelo mpv. Diferentemente
-    /// do FFmpeg independente, acompanha o canal aberto na tela.
-    no_player: Option<GravacaoNoPlayer>,
+    ativos: Vec<crate::dvr_stream::GravacaoStream>,
     agendados: Vec<Agendamento>,
+    avisos_iniciais: Vec<String>,
 }
 
 impl Dvr {
@@ -174,131 +143,56 @@ impl Dvr {
         let agendados = fs::read_to_string(catalogo::pasta().join(AGENDA)).ok()
             .and_then(|s| serde_json::from_str::<Vec<Agendamento>>(&s).ok())
             .unwrap_or_default();
-        Self { ativos: Vec::new(), no_player: None, agendados }
+        let mut avisos_iniciais = Vec::new();
+        if let Ok(binario) = ffmpeg() {
+            let recuperadas = crate::dvr_stream::recuperar_sessoes(
+                &pasta().join("Gravacoes"), &binario
+            );
+            if recuperadas > 0 {
+                avisos_iniciais.push(format!(
+                    "DVR recuperando {recuperadas} sessão(ões) interrompida(s). Os trechos permanecem salvos."
+                ));
+            }
+        }
+        Self { ativos: Vec::new(), agendados, avisos_iniciais }
     }
 
     fn salvar_agenda(&self) {
         if let Ok(texto) = serde_json::to_string_pretty(&self.agendados) {
-            let _ = fs::write(catalogo::pasta().join(AGENDA), texto);
+            let temp = catalogo::pasta().join("gravacoes-agendadas.tmp");
+            if fs::write(&temp, texto).is_ok() {
+                let _ = fs::rename(temp, catalogo::pasta().join(AGENDA));
+            }
         }
     }
 
-    pub fn gravando(&self) -> bool { !self.ativos.is_empty() || self.no_player.is_some() }
+    pub fn gravando(&self) -> bool { !self.ativos.is_empty() }
     pub fn ha_agenda(&self) -> bool { self.agendados.iter().any(|a| !a.executado) }
-    pub fn quantidade_agendada(&self) -> usize { self.agendados.iter().filter(|a| !a.executado).count() }
+    pub fn quantidade_agendada(&self) -> usize {
+        self.agendados.iter().filter(|a| !a.executado).count()
+    }
     pub fn ativo_no_canal(&self, nome: &str) -> bool {
-        self.ativos.iter().any(|a| a.canal == nome)
-            || self.no_player.as_ref().is_some_and(|r| r.canal == nome)
+        self.ativos.iter().any(|r| r.canal == nome)
     }
 
-    /// Gravação manual confiando no demuxer do próprio player, inclusive em
-    /// playlists HLS disfarçadas de .txt. Não abre uma nova conexão FFmpeg.
-    /// Precisa manter este canal em reprodução; não serve para agendamento
-    /// independente, que continua utilizando FFmpeg.
-    pub fn iniciar_no_player(
-        &mut self, canal: &str, mpv: &mpv::Mpv, duracao_s: Option<u64>,
-    ) -> Result<PathBuf, String> {
-        if self.no_player.is_some() {
-            return Err("Já existe gravação do canal em reprodução".into());
-        }
-        if self.ativo_no_canal(canal) {
+    pub fn iniciar(&mut self, canal: &catalogo::Canal, indice: usize, duracao: Option<u64>) -> Result<PathBuf, String> {
+        if self.ativos.len() >= 3 { return Err("Limite de três gravações simultâneas".into()); }
+        if self.ativo_no_canal(&canal.nome) {
             return Err("Este canal já está sendo gravado".into());
         }
-        let formato = mpv.ler("file-format");
-        let ext = extensao_da_transmissao(formato.as_deref());
-        let arquivo = arquivo_novo(canal, ext, "Gravacoes")?;
-        crate::diagnostico::etapa(&format!(
-            "DVR: stream-record formato={} contêiner={} (sem armazenar URL)",
-            formato.as_deref().unwrap_or("desconhecido"), ext
-        ));
-        mpv.gravar_fluxo(Some(&arquivo))?;
-        self.no_player = Some(GravacaoNoPlayer {
-            canal: canal.into(),
-            arquivo: arquivo.clone(),
-            fim_em: duracao_s.map(|s| std::time::Instant::now() + std::time::Duration::from_secs(s)),
-            desde: std::time::Instant::now(),
-            avisou_sem_dados: false,
-            confirmou_dados: false,
-        });
-        Ok(arquivo)
-    }
-
-    pub fn parar_no_player(&mut self, mpv: &mpv::Mpv) -> Result<Option<PathBuf>, String> {
-        let Some(ativo) = self.no_player.as_ref() else { return Ok(None) };
-        mpv.gravar_fluxo(None)?;
-        let arquivo = ativo.arquivo.clone();
-        self.no_player = None;
-        let bytes = fs::metadata(&arquivo).map(|m| m.len()).unwrap_or(0);
-        if bytes == 0 {
-            return Err(format!(
-                "O mpv encerrou a gravação, mas não produziu dados. Arquivo: {}", arquivo.display()
-            ));
-        }
-        Ok(Some(arquivo))
-    }
-
-
-    pub fn iniciar(&mut self, canal: &catalogo::Canal, indice: usize, duracao_s: Option<u64>) -> Result<PathBuf, String> {
-        if self.ativos.len() >= 3 { return Err("Limite de 3 gravações simultâneas.".into()); }
-        if self.ativo_no_canal(&canal.nome) { return Err("Este canal já está sendo gravado.".into()); }
-        let fonte = canal.fontes.get(indice).ok_or("Fonte do canal não encontrada")?;
-        if fonte.chave.is_some() {
-            return Err("Fonte protegida: gravação não disponível.".into());
-        }
-        let saida = arquivo_novo(&canal.nome, "mkv", "Gravacoes")?;
-        // O erro anterior era invisível: toda saída do FFmpeg ia para null.
-        // Cada gravação agora possui diagnóstico local, sem exibir URL/token na UI.
-        let log = saida.with_extension("ffmpeg.log");
-        let log_aberto = fs::File::create(&log)
-            .map_err(|e| format!("Não foi possível criar log da gravação: {e}"))?;
-        let binario = ffmpeg()?;
-        let mut comando = Command::new(binario);
-        comando.args(["-hide_banner", "-loglevel", "warning", "-nostats", "-y"]);
-        // Uso de cabeçalhos compatíveis com o player, inclusive quando o
-        // catálogo não publicou um agente personalizado.
-        comando.args(["-user_agent", fonte.agente.as_deref().unwrap_or(crate::AGENTE)]);
-        if let Some(referer) = fonte.referer.as_deref() {
-            comando.args(["-referer", referer]);
-        }
-        if fonte.url.starts_with("http://") || fonte.url.starts_with("https://") {
-            comando.args([
-                "-reconnect", "1",
-                "-reconnect_streamed", "1",
-                "-reconnect_on_network_error", "1",
-                "-reconnect_delay_max", "5",
-            ]);
-        }
-        comando.arg("-i").arg(&fonte.url)
-            .args(["-map", "0:v:0?", "-map", "0:a:0?", "-c", "copy"]);
-        // Sem limite: grava até clicar em Parar; agendamentos sempre passam duração.
-        if let Some(segundos) = duracao_s {
-            comando.args(["-t", &segundos.max(1).to_string()]);
-        }
-        comando.args(["-f", "matroska"])
-            .arg(&saida)
-            .stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::from(log_aberto));
-        #[cfg(windows)] {
-            use std::os::windows::process::CommandExt;
-            comando.creation_flags(0x08000000); // CREATE_NO_WINDOW
-        }
-        let filho = comando.spawn().map_err(|e| format!("Não foi possível iniciar FFmpeg: {e}. Log: {}", log.display()))?;
-        self.ativos.push(GravacaoAtiva {
-            canal: canal.nome.clone(), arquivo: saida.clone(), log,
-            filho, parada_solicitada: false,
-        });
-        Ok(saida)
+        let ffmpeg = ffmpeg()?;
+        let rec = crate::dvr_stream::GravacaoStream::iniciar(
+            canal, indice, duracao, ffmpeg, &pasta().join("Gravacoes")
+        )?;
+        let pasta = rec.pasta.clone();
+        self.ativos.push(rec);
+        Ok(pasta)
     }
 
     pub fn parar(&mut self, canal: &str) -> Result<(), String> {
         let ativo = self.ativos.iter_mut().find(|a| a.canal == canal)
             .ok_or("Nenhuma gravação em andamento neste canal")?;
-        if let Some(mut stdin) = ativo.filho.stdin.take() {
-            // FFmpeg com -nostdin não lê 'q'; remover essa opção é essencial
-            // para um encerramento limpo com índice do contêiner MKV.
-            stdin.write_all(b"q\n").map_err(|e| format!("Não foi possível parar: {e}"))?;
-        }
-        ativo.parada_solicitada = true;
-        Ok(())
+        ativo.solicitar_parada()
     }
 
     pub fn agendar(&mut self, canal: &str, fonte: usize, inicio: &str, minutos: u32) -> Result<(), String> {
@@ -310,88 +204,58 @@ impl Dvr {
         if data < agora || data > agora + 90 * 24 * 3600 {
             return Err("Escolha uma data futura dentro de 90 dias.".into());
         }
-        if !(1..=480).contains(&minutos) { return Err("Duração permitida: 1 a 480 minutos.".into()); }
+        if !(1..=480).contains(&minutos) {
+            return Err("Duração permitida: 1 a 480 minutos.".into());
+        }
         self.agendados.push(Agendamento {
             canal: canal.into(), fonte, inicio: data,
-            fim: data + (minutos as i64) * 60, executado: false,
+            fim: data + (minutos as i64) * 60, executado: false
         });
         self.salvar_agenda();
         Ok(())
     }
 
-    /// Chamar pela interface regularmente, mesmo se o usuário não estiver no canal.
-    pub fn atualizar(&mut self, canais: &[catalogo::Canal], mpv: Option<&mpv::Mpv>) -> Vec<String> {
-        let mut avisos = Vec::new();
-        if let Some(ativo) = self.no_player.as_mut() {
-            let bytes = fs::metadata(&ativo.arquivo).map(|m| m.len()).unwrap_or(0);
-            if bytes > 0 && !ativo.confirmou_dados {
-                ativo.confirmou_dados = true;
-                avisos.push(format!(
-                    "DVR: dados sendo gravados em {} ({} bytes até agora)",
-                    ativo.arquivo.display(), bytes
-                ));
-            } else if bytes == 0 && ativo.desde.elapsed().as_secs() >= 15
-                && !ativo.avisou_sem_dados {
-                ativo.avisou_sem_dados = true;
-                avisos.push(format!(
-                    "DVR: {} continua com 0 bytes após 15 s. O formato desta fonte pode não ser suportado por stream-record.",
-                    ativo.canal
-                ));
-            }
-        }
-        let vencida = self.no_player.as_ref()
-            .and_then(|r| r.fim_em).is_some_and(|fim| std::time::Instant::now() >= fim);
-        if vencida {
-            if let Some(mpv) = mpv {
-                match self.parar_no_player(mpv) {
-                    Ok(Some(p)) => avisos.push(format!("Gravação manual finalizada: {}", p.display())),
-                    Err(e) => avisos.push(format!("Não foi possível finalizar a gravação: {e}")),
-                    Ok(None) => {}
-                }
-            }
-        }
+    /// Roda a cada segundo, sem bloquear a interface.
+    pub fn atualizar(&mut self, canais: &[catalogo::Canal]) -> Vec<String> {
+        let mut avisos = std::mem::take(&mut self.avisos_iniciais);
         let mut i = 0;
         while i < self.ativos.len() {
-            match self.ativos[i].filho.try_wait() {
-                Ok(Some(status)) => {
-                    let gravacao = self.ativos.remove(i);
-                    let tamanho = fs::metadata(&gravacao.arquivo).map(|m| m.len()).unwrap_or(0);
-                    if status.success() && tamanho > 0 {
-                        let encerramento = if gravacao.parada_solicitada { "Finalizada" } else { "Concluída" };
-                        avisos.push(format!("{encerramento}: {} ({})", gravacao.canal, gravacao.arquivo.display()));
-                    } else {
-                        avisos.push(format!(
-                            "Gravação falhou: {} (código: {:?}, arquivo: {} bytes). Log: {}",
-                            gravacao.canal, status.code(), tamanho, gravacao.log.display()
-                        ));
-                    }
-                }
-                Ok(None) => i += 1,
-                Err(e) => {
-                    avisos.push(format!("Erro na gravação: {e}"));
-                    self.ativos.remove(i);
-                }
-            }
+            let (ativa, mensagens) = self.ativos[i].atualizar();
+            avisos.extend(mensagens);
+            if ativa { i += 1; } else { self.ativos.remove(i); }
         }
+
         let agora = epg::agora();
         let mut salvar = false;
         for i in 0..self.agendados.len() {
             if self.agendados[i].executado { continue; }
-            if agora >= self.agendados[i].fim {
+            let a = self.agendados[i].clone();
+            if agora >= a.fim {
                 self.agendados[i].executado = true;
                 salvar = true;
-                avisos.push(format!("Agendamento perdido (aplicativo fechado?): {}", self.agendados[i].canal));
-            } else if agora >= self.agendados[i].inicio {
-                let a = self.agendados[i].clone();
+                avisos.push(format!(
+                    "Gravação programada perdida (Saimo fechado/desligado?): {}", a.canal
+                ));
+            } else if agora >= a.inicio {
+                // Marcar como iniciada antes de criar o processo impede disparo
+                // duplicado no mesmo instante; sessões parcialmente gravadas
+                // continuam disponíveis mesmo após encerramento inesperado.
                 self.agendados[i].executado = true;
                 salvar = true;
                 if let Some(c) = canais.iter().find(|c| c.nome == a.canal) {
                     match self.iniciar(c, a.fonte, Some((a.fim - agora) as u64)) {
-                        Ok(p) => avisos.push(format!("Gravação agendada iniciada: {}", p.display())),
-                        Err(e) => avisos.push(format!("Agendamento não iniciado: {e}")),
+                        Ok(p) => avisos.push(format!(
+                            "DVR: agendamento iniciado para {}. Verificando dados em {}",
+                            c.nome, p.display()
+                        )),
+                        Err(e) => avisos.push(format!(
+                            "DVR: agendamento de {} falhou: {e}", a.canal
+                        )),
                     }
                 } else {
-                    avisos.push(format!("Canal do agendamento não encontrado: {}", a.canal));
+                    avisos.push(format!(
+                        "DVR: canal agendado não encontrado no catálogo: {}", a.canal
+                    ));
                 }
             }
         }
@@ -400,14 +264,11 @@ impl Dvr {
     }
 }
 
-// Ao fechar o Saimo, sinaliza 'q' para o FFmpeg finalizar o arquivo MKV.
-// Não deixa uma gravação manual infinita invisível no sistema.
+/// Não destruir os arquivos se o usuário fechar o Saimo durante a gravação.
 impl Drop for Dvr {
     fn drop(&mut self) {
-        for gravacao in &mut self.ativos {
-            if let Some(mut entrada) = gravacao.filho.stdin.take() {
-                let _ = entrada.write_all(b"q\n");
-            }
+        for rec in &mut self.ativos {
+            let _ = rec.solicitar_parada();
         }
     }
 }
@@ -415,20 +276,14 @@ impl Drop for Dvr {
 #[cfg(test)]
 mod testes {
     use super::*;
+
     #[test]
     fn sanitiza_nome_para_arquivos() {
         assert_eq!(nome_seguro("SBT: São Paulo / HD"), "SBT_ São Paulo _ HD");
     }
-    #[test]
-    fn escolhe_transport_stream_para_hls_ao_vivo() {
-        assert_eq!(extensao_da_transmissao(Some("hls")), "ts");
-        assert_eq!(extensao_da_transmissao(Some("mpegts")), "ts");
-        assert_eq!(extensao_da_transmissao(None), "ts");
-        assert_eq!(extensao_da_transmissao(Some("matroska,webm")), "mkv");
-    }
 
     #[test]
-    fn pasta_padrao_nao_pressupoe_j_ou_e() {
+    fn pasta_padrao_por_dispositivo() {
         assert!(pasta_padrao().is_absolute() || !home().is_absolute());
     }
 }
