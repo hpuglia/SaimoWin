@@ -1,10 +1,10 @@
 name: Test DVR Windows
 on:
   push:
-    branches: [ "fix/auto-hide-mouse-cursor" ]
+    branches: [ "fix/auto-hide-mouse-cursor", "feature/dvr-windows-nativo" ]
   workflow_dispatch:
 permissions:
-  contents: write
+  contents: read
 jobs:
   rust-windows:
     runs-on: windows-latest
@@ -13,13 +13,3 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Unit tests and compilation (refresh dependency lock if needed)
         run: cargo test --release
-      - name: Update Cargo.lock for new OBS integration dependencies
-        shell: bash
-        run: |
-          if ! git diff --quiet -- Cargo.lock; then
-            git config user.name "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git add Cargo.lock
-            git commit -m "chore(deps): lock OBS WebSocket dependencies"
-            git push
-          fi
