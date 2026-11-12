@@ -9,6 +9,7 @@
 
 const ARQUIVO: &str = "radios.txt";
 const RECENTES: &str = "radios-recentes.txt";
+const FAVORITAS: &str = "radios-favoritas.txt";
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Radio {
@@ -91,6 +92,47 @@ pub fn ouviu(nome: &str) {
     lista.insert(0, nome.to_string());
     lista.truncate(12);
     let _ = std::fs::write(crate::catalogo::pasta().join(RECENTES), lista.join("\n"));
+}
+
+/// Nomes das rádios favoritas. Persistência local independente das recentes.
+pub fn favoritas() -> Vec<String> {
+    let texto = std::fs::read_to_string(crate::catalogo::pasta().join(FAVORITAS)).unwrap_or_default();
+    let mut vistas = std::collections::HashSet::new();
+    texto.lines().map(str::trim)
+        .filter(|n| !n.is_empty() && vistas.insert((*n).to_string()))
+        .map(str::to_string).collect()
+}
+
+pub fn eh_favorita(nome: &str) -> bool {
+    favoritas().iter().any(|n| n == nome)
+}
+
+pub fn alternar_favorita(nome: &str) {
+    if nome.trim().is_empty() { return; }
+    let mut lista = favoritas();
+    if lista.iter().any(|n| n == nome) {
+        lista.retain(|n| n != nome);
+    } else {
+        lista.insert(0, nome.to_string());
+    }
+    let _ = std::fs::write(crate::catalogo::pasta().join(FAVORITAS), lista.join("\n"));
+}
+
+/// Adiciona favoritos vindos do Saimo Connect sem apagar os locais.
+pub fn importar_favoritas(remotas: &[String]) -> bool {
+    let mut lista = favoritas();
+    let mut mudou = false;
+    for nome in remotas.iter().take(200) {
+        if nome.is_empty() || nome.len() > 300 || nome.contains('\n') { continue; }
+        if !lista.contains(nome) {
+            lista.push(nome.clone());
+            mudou = true;
+        }
+    }
+    if mudou {
+        let _ = std::fs::write(crate::catalogo::pasta().join(FAVORITAS), lista.join("\n"));
+    }
+    mudou
 }
 
 /// A letra da fileira de A a Z: números e símbolos juntos, antes do A.
