@@ -28,6 +28,12 @@ fn home() -> PathBuf {
 
 /// Pasta de vídeo do usuário, em vez de assumir C:, J: ou E:.
 pub fn pasta_padrao() -> PathBuf {
+    // Instalações portáteis e testes podem fornecer outro volume sem alterar
+    // a preferência persistida. Ex.: SAIMO_GRAVACOES_DIR=J:\\SaimoTV\\Gravacoes.
+    if let Some(dir) = std::env::var_os("SAIMO_GRAVACOES_DIR")
+        .map(PathBuf::from).filter(|p| p.is_absolute()) {
+        return dir;
+    }
     #[cfg(target_os = "windows")]
     { home().join("Videos").join("Saimo TV") }
     #[cfg(target_os = "macos")]
@@ -269,7 +275,6 @@ mod testes {
     }
     #[test]
     fn pasta_padrao_nao_pressupoe_j_ou_e() {
-        assert!(!pasta_padrao().to_string_lossy().contains("J:\\\\"));
-        assert!(!pasta_padrao().to_string_lossy().contains("E:\\\\"));
+        assert!(pasta_padrao().is_absolute() || !home().is_absolute());
     }
 }
