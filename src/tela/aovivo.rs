@@ -741,8 +741,36 @@ fn barra_do_ao_vivo(app: &mut App, ui: &mut egui::Ui, area: Rect) {
                 use crate::dvr::FaseGravacao as Fase;
                 let fase = app.dvr.fase_do_canal(&nome);
                 let gravando = app.dvr.ativo_no_canal(&nome);
-                if botao_redondo(ui, Icone::Agendar, 42.0, "Agendar gravação", false).clicked() {
-                    app.abrir_agendamento_ao_vivo();
+                let pendentes = app.dvr.pendentes_no_canal(&nome);
+                let historico = app.dvr.agendamentos_do_canal(&nome);
+                let ativo_agendado = historico.iter().any(|(_, a)| 
+                    a.status == "gravando" || a.status == "processando"
+                );
+                let botao_agenda = botao_redondo(
+                    ui, Icone::Agendar, 42.0,
+                    if pendentes > 0 { "Gravações agendadas: conferir horário e status" }
+                    else if !historico.is_empty() { "Consultar gravações agendadas" }
+                    else { "Agendar gravação" },
+                    pendentes > 0 || ativo_agendado,
+                );
+                if botao_agenda.clicked() {
+                    app.botao_agendar_ao_vivo();
+                }
+                if pendentes > 0 || ativo_agendado {
+                    // Um pequeno ponto comunica agendamento aguardando; vermelho
+                    // apenas se já estiver realmente gravando.
+                    let cor = if ativo_agendado {
+                        Color32::from_rgb(245, 104, 104)
+                    } else { ACENTO };
+                    let p = ui.ctx().layer_painter(egui::LayerId::new(
+                        egui::Order::Foreground, egui::Id::new("agenda-dvr-indicador")
+                    ));
+                    p.circle_stroke(
+                        botao_agenda.rect.center(), botao_agenda.rect.width() * 0.52,
+                        Stroke::new(2.2, cor)
+                    );
+                    let ponto = botao_agenda.rect.right_top() + egui::vec2(-4.0, 4.0);
+                    p.circle_filled(ponto, 4.0, cor);
                 }
                 let resposta = botao_redondo(
                     ui, Icone::Gravar, 42.0,
@@ -759,35 +787,31 @@ fn barra_do_ao_vivo(app: &mut App, ui: &mut egui::Ui, area: Rect) {
                 if resposta.clicked() && !matches!(fase, Fase::Processando | Fase::Iniciando) {
                     app.alternar_gravacao_ao_vivo();
                 }
-                // Anel colorido sobre o próprio botão, com texto compacto logo
-                // acima. Não ocupa o controle de volume nem os botões originais.
-                {
-                    let (rotulo, cor) = match fase {
-                        Fase::Iniciando => ("PREPARANDO", Color32::from_rgb(246, 194, 78)),
-                        Fase::Gravando => ("GRAVANDO", Color32::from_rgb(255, 84, 84)),
-                        Fase::Processando => ("PROCESSANDO", Color32::from_rgb(110, 199, 255)),
-                        Fase::Concluido => ("SALVO", Color32::from_rgb(100, 225, 164)),
-                        Fase::Erro => ("ERRO", Color32::from_rgb(255, 112, 112)),
-                        Fase::Parado => ("PARADO", Color32::from_gray(162)),
+                // Somente GRAVANDO pisca discretamente. Os demais estados
+                // usam apenas a cor do anel, sem etiquetas persistentes.
+                if fase != Fase::Parado {
+                    let cor = match fase {
+                        Fase::Iniciando => Color32::from_rgb(246, 194, 78),
+                        Fase::Gravando => Color32::from_rgb(255, 84, 84),
+                        Fase::Processando => Color32::from_rgb(110, 199, 255),
+                        Fase::Concluido => Color32::from_rgb(100, 225, 164),
+                        Fase::Erro => Color32::from_rgb(255, 112, 112),
+                        Fase::Parado => Color32::TRANSPARENT,
                     };
-                    let pintor = ui.ctx().layer_painter(egui::LayerId::new(
+                    let p = ui.ctx().layer_painter(egui::LayerId::new(
                         egui::Order::Foreground, egui::Id::new("dvr-indicador")
                     ));
-                    let intensidade = if fase == Fase::Gravando {
-                        2.8 + (ui.input(|i| i.time) as f32 * 4.0).sin().abs() * 1.2
-                    } else { 2.8 };
-                    pintor.circle_stroke(
+                    let (largura, alpha) = if fase == Fase::Gravando {
+                        let t = ui.input(|i| i.time) as f32;
+                        let onda = (t * 2.7).sin() * 0.5 + 0.5;
+                        ui.ctx().request_repaint_after(Duration::from_millis(130));
+                        (2.0 + onda * 0.7, (175.0 + onda * 65.0) as u8)
+                    } else { (2.1, 205) };
+                    let suave = Color32::from_rgba_unmultiplied(cor.r(), cor.g(), cor.b(), alpha);
+                    p.circle_stroke(
                         resposta.rect.center(), resposta.rect.width() * 0.52,
-                        Stroke::new(intensidade, cor)
+                        Stroke::new(largura, suave)
                     );
-                    let centro = resposta.rect.center_top() + egui::vec2(0.0, -12.0);
-                    let etiqueta = Rect::from_center_size(centro, egui::vec2(100.0, 19.0));
-                    pintor.rect_filled(etiqueta, 10.0, Color32::from_black_alpha(195));
-                    pintor.text(etiqueta.center(), Align2::CENTER_CENTER,
-                        rotulo, forte(10.0), cor);
-                    if fase == Fase::Gravando {
-                        ui.ctx().request_repaint_after(Duration::from_millis(240));
-                    }
                 }
                 if botao_redondo(ui, Icone::Captura, 42.0, "Salvar captura de tela (PNG)", false).clicked() {
                     app.capturar_ao_vivo();
