@@ -1,5 +1,5 @@
 //! Gravação direta de TV: usa cópia de pacotes FFmpeg em arquivos Matroska
-//! independentes (30 s por trecho) sem OBS, reencodificação ou captura de tela.
+//! independentes (30 s por trecho) sem reencodificação nem captura de tela.
 //! Os trechos permanecem no disco mesmo que o programa encerre inesperadamente.
 use crate::catalogo;
 use chrono::Local;
