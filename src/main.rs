@@ -360,6 +360,11 @@ struct App {
     pub agendamento_aberto: bool,
     pub agendamento_inicio: String,
     pub agendamento_minutos: String,
+    pub agendamento_mes: u32,
+    pub agendamento_ano: i32,
+    pub gravacao_dialogo_aberto: bool,
+    pub gravacao_com_limite: bool,
+    pub gravacao_minutos: String,
     ultima_verificacao_dvr: Instant,
     logos: HashMap<String, Option<egui::TextureHandle>>,
     /// Chave no mapa, endereço e o lado máximo em pixels.
@@ -697,6 +702,11 @@ impl App {
             agendamento_aberto: false,
             agendamento_inicio: (chrono::Local::now() + chrono::Duration::minutes(5)).format("%Y-%m-%d %H:%M").to_string(),
             agendamento_minutos: "60".into(),
+            agendamento_mes: chrono::Local::now().format("%m").to_string().parse().unwrap_or(1),
+            agendamento_ano: chrono::Local::now().format("%Y").to_string().parse().unwrap_or(2026),
+            gravacao_dialogo_aberto: false,
+            gravacao_com_limite: false,
+            gravacao_minutos: "60".into(),
             ultima_verificacao_dvr: Instant::now(),
             logos: HashMap::new(),
             pedidos_de_logo: Vec::new(),
@@ -3600,18 +3610,45 @@ vec4 hook() {{
         self.aviso = Some((texto, Instant::now()));
     }
 
-    /// Gravar em processo separado, sem mudar o canal que está na tela.
-    /// Por segurança, a sessão manual termina em até 4 horas.
+    /// No primeiro clique, oferecer gravação livre ou com duração.
+    /// Se já está gravando o canal, o clique encerra o arquivo.
     pub fn alternar_gravacao_ao_vivo(&mut self) {
-        let Some((indice, fonte)) = self.tocando.as_ref().map(|t| (t.canal, t.fonte)) else { return; };
-        let Some(canal) = self.canais.get(indice).cloned() else { return; };
-        let resultado = if self.dvr.ativo_no_canal(&canal.nome) {
-            self.dvr.parar(&canal.nome).map(|_| "Finalizando gravação…".to_string())
+        let Some(indice) = self.tocando.as_ref().map(|t| t.canal) else { return };
+        let Some(nome) = self.canais.get(indice).map(|c| c.nome.clone()) else { return };
+        if self.dvr.ativo_no_canal(&nome) {
+            let resultado = self.dvr.parar(&nome);
+            let aviso = resultado.map(|_| "Finalizando gravação…".to_string())
+                .unwrap_or_else(|e| format!("Não foi possível parar: {e}"));
+            self.aviso = Some((aviso, Instant::now()));
         } else {
-            self.dvr.iniciar(&canal, fonte, 4 * 3600)
-                .map(|p| format!("Gravando {}: {}", canal.nome, p.display()))
-        };
-        self.aviso = Some((resultado.unwrap_or_else(|e| format!("Não foi possível gravar: {e}")), Instant::now()));
+            self.gravacao_dialogo_aberto = true;
+            self.gravacao_com_limite = false;
+            self.gravacao_minutos = "60".into();
+            self.mostrar_controles();
+        }
+    }
+
+    /// Iniciar apenas depois de escolher o limite. Nenhum temporizador
+    /// implícito para gravações manuais: o usuário controla o encerramento.
+    pub fn confirmar_gravacao_manual(&mut self) {
+        let Some((indice, fonte)) = self.tocando.as_ref().map(|t| (t.canal, t.fonte)) else { return };
+        let Some(canal) = self.canais.get(indice).cloned() else { return };
+        let duracao = if self.gravacao_com_limite {
+            match self.gravacao_minutos.trim().parse::<u64>() {
+                Ok(m) if (1..=480).contains(&m) => Some(m * 60),
+                _ => {
+                    self.aviso = Some(("Informe uma duração entre 1 e 480 minutos".into(), Instant::now()));
+                    return;
+                }
+            }
+        } else { None };
+        match self.dvr.iniciar(&canal, fonte, duracao) {
+            Ok(p) => {
+                self.gravacao_dialogo_aberto = false;
+                self.aviso = Some((format!("Gravação iniciada: {}", p.display()), Instant::now()));
+            }
+            Err(e) => self.aviso = Some((format!("Não foi possível gravar: {e}"), Instant::now())),
+        }
     }
 
     pub fn abrir_agendamento_ao_vivo(&mut self) {
@@ -3624,6 +3661,8 @@ vec4 hook() {{
             .map(|utc| utc.with_timezone(&chrono::Local))
             .unwrap_or_else(|| chrono::Local::now() + chrono::Duration::minutes(5));
         self.agendamento_inicio = inicio.format("%Y-%m-%d %H:%M").to_string();
+        self.agendamento_mes = inicio.format("%m").to_string().parse().unwrap_or(1);
+        self.agendamento_ano = inicio.format("%Y").to_string().parse().unwrap_or(2026);
         self.agendamento_minutos = "60".into();
         self.agendamento_aberto = true;
         self.mostrar_controles();
