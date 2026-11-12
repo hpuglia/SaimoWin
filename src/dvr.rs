@@ -5,7 +5,7 @@ use crate::{catalogo, epg, mpv};
 use chrono::{Local, NaiveDateTime, TimeZone};
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::{self, Sender, Receiver};
 use std::time::{Duration, Instant};
@@ -282,11 +282,11 @@ impl Dvr {
                 if concluida.tem_dados() && concluida.tem_finalizacao() {
                     self.processando.insert(concluida.canal.clone());
                     self.recente.insert(
-                        concluida.canal, (FaseGravacao::Processando, Instant::now())
+                        concluida.canal.clone(), (FaseGravacao::Processando, Instant::now())
                     );
                 } else {
                     self.recente.insert(
-                        concluida.canal, (FaseGravacao::Erro, Instant::now())
+                        concluida.canal.clone(), (FaseGravacao::Erro, Instant::now())
                     );
                 }
             }
