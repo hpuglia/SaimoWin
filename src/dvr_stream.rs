@@ -132,7 +132,16 @@ fn publicar_validado(pasta: &Path, ffmpeg: &Path) -> Result<PathBuf, String> {
     // Depois de um encerramento inesperado, concluir uma limpeza pendente.
     if let Some(existente) = estado.arquivo_final.as_deref() {
         let saida = PathBuf::from(existente);
-        if saida.is_file() && validar_fluxos(ffmpeg, &saida) == Some((true, true)) {
+        // O manifesto é um arquivo local editável: não confiar nele para
+        // autorizar limpeza com base em um vídeo de outra pasta.
+        let raiz = raiz_da_gravacao(pasta);
+        let nome = pasta.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        let proprio = raiz.as_deref() == saida.parent()
+            && saida.extension().is_some_and(|e| e == "mkv")
+            && saida.file_stem().and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with(nome));
+        if proprio && saida.is_file()
+            && validar_fluxos(ffmpeg, &saida) == Some((true, true)) {
             limpar_temporarios(pasta);
             return Ok(saida);
         }
@@ -585,6 +594,27 @@ mod testes {
     fn URL_m3u8_faz_seleção_normal_primeiro() {
         assert!(args_hls("https://exemplo.test/live.m3u8", 0).is_empty());
         assert!(!e_playlist_hls("https://exemplo.test/file.mp4"));
+    }
+
+    #[test]
+    fn manutencao_so_exclui_arquivos_temporarios_conhecidos() {
+        let raiz = std::env::temp_dir().join(format!(
+            "saimo-limpeza-teste-{}", std::process::id()
+        ));
+        let pasta = raiz.join("_Processando").join("teste");
+        let _ = fs::remove_dir_all(&raiz);
+        fs::create_dir_all(&pasta).unwrap();
+        fs::write(pasta.join("parte_00000.mkv"), b"trecho").unwrap();
+        fs::write(pasta.join("sessao.json"), b"{}").unwrap();
+        fs::write(pasta.join("anotacoes-do-usuario.txt"), b"preservar").unwrap();
+        limpar_temporarios(&pasta);
+        assert!(!pasta.join("parte_00000.mkv").exists());
+        assert!(pasta.join("anotacoes-do-usuario.txt").exists());
+        assert_eq!(
+            nome_final_disponivel(&pasta).unwrap(),
+            raiz.join("teste.mkv")
+        );
+        let _ = fs::remove_dir_all(&raiz);
     }
 
     #[test]
