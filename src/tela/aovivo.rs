@@ -1398,16 +1398,16 @@ fn escolher_data(
     let Some(primeiro) = NaiveDate::from_ymd_opt(*ano, *mes, 1) else { return };
     let deslocamento = primeiro.weekday().num_days_from_sunday() as usize;
     ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 5.0;
+        ui.spacing_mut().item_spacing.x = 2.0;
         for titulo in DIAS {
-            ui.add_sized([44.0, 20.0], egui::Label::new(titulo));
+            ui.add_sized([33.0, 18.0], egui::Label::new(titulo));
         }
     });
     let atual = inicio.split_whitespace().next()
         .and_then(|d| NaiveDate::parse_from_str(d, "%Y-%m-%d").ok());
     for semana in 0..6 {
         ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 5.0;
+            ui.spacing_mut().item_spacing.x = 2.0;
             for dia_semana in 0..7 {
                 let indice = semana * 7 + dia_semana;
                 let dia = indice as i64 - deslocamento as i64 + 1;
@@ -1415,92 +1415,211 @@ fn escolher_data(
                 let data = data.filter(|d| d.month() == *mes);
                 if let Some(data) = data {
                     let selecionado = atual == Some(data);
-                    if ui.add_sized([44.0, 28.0],
+                    if ui.add_sized([33.0, 26.0],
                         egui::Button::new(data.day().to_string()).selected(selecionado)).clicked() {
                         let hora = inicio.split_whitespace().nth(1).unwrap_or("19:00").to_string();
                         *inicio = format!("{} {hora}", data.format("%Y-%m-%d"));
                     }
                 } else {
-                    ui.add_sized([44.0, 28.0], egui::Label::new(" "));
+                    ui.add_sized([33.0, 26.0], egui::Label::new(" "));
                 }
             }
         });
     }
 }
 
-/// Agendamento centralizado, com calendário e sugestões da grade EPG.
+/// Agendamento compacto: o calendário abre sob demanda e a grade fica em menu.
+/// O limite de altura evita que o modal ultrapasse a janela em telas pequenas.
 pub fn dialogo_agendamento(app: &mut App, ctx: &egui::Context) {
     if !app.agendamento_aberto { return; }
     let mut inicio = app.agendamento_inicio.clone();
     let mut minutos = app.agendamento_minutos.clone();
     let mut ano = app.agendamento_ano;
     let mut mes = app.agendamento_mes;
+    let mut programa = app.agendamento_programa.clone();
     let mut salvar = false;
     let mut cancelar = false;
     let canal = app.tocando.as_ref()
         .and_then(|t| app.canais.get(t.canal))
         .map(|c| c.nome.clone()).unwrap_or_default();
-
-    egui::Window::new("Agendar gravação de TV")
+    let largura = (ctx.available_rect().width() - 30.0).clamp(260.0, 350.0);
+    let altura = (ctx.available_rect().height() - 100.0).max(190.0);
+    let id_cal = egui::Id::new("dvr-calendario-expandido");
+    let mut calendario_aberto = ctx.data(|d| d.get_temp::<bool>(id_cal)).unwrap_or(false);
+    egui::Window::new("Agendar gravação")
         .id(egui::Id::new("agendamento-dvr"))
         .anchor(Align2::CENTER_CENTER, egui::Vec2::ZERO)
         .collapsible(false)
         .resizable(false)
-        .default_width(470.0)
+        .default_width(largura)
         .show(ctx, |ui| {
-            ui.label(format!("Canal: {canal}"));
-            ui.label("Escolha uma data no calendário e informe o horário local.");
-            ui.separator();
-            escolher_data(ui, &mut inicio, &mut ano, &mut mes);
-            ui.add_space(6.0);
-            ui.horizontal(|ui| {
-                ui.label("Hora (HH:MM):");
-                let mut hora = inicio.split_whitespace().nth(1).unwrap_or("19:00").to_string();
-                if ui.add(egui::TextEdit::singleline(&mut hora).desired_width(80.0)).changed() {
-                    let data = inicio.split_whitespace().next().unwrap_or("").to_string();
-                    inicio = format!("{data} {hora}");
-                }
-                ui.label("Duração (min):");
-                ui.add(egui::TextEdit::singleline(&mut minutos).desired_width(80.0));
-            });
-
-            let programas: Vec<epg::Programa> = epg::grade(&canal).into_iter()
-                .filter(|p| p.fim > epg::agora())
-                .take(4).collect();
-            if !programas.is_empty() {
-                ui.separator();
-                ui.label(egui::RichText::new("Sugestões da programação").strong());
-                ui.label("Clique para preencher horário e duração automaticamente:");
-                for p in programas {
-                    let texto = format!("{} · {} ({})", p.horario(), p.titulo, p.categoria);
-                    if ui.button(texto).clicked() {
-                        let inicio_real = p.inicio.max(epg::agora() + 60);
-                        if let Some(dt) = chrono::DateTime::from_timestamp(inicio_real, 0)
-                            .map(|x| x.with_timezone(&chrono::Local)) {
-                            inicio = dt.format("%Y-%m-%d %H:%M").to_string();
-                            use chrono::Datelike;
-                            ano = dt.year();
-                            mes = dt.month();
-                            let restante = ((p.fim - inicio_real) + 59) / 60;
-                            minutos = restante.clamp(1, 480).to_string();
+            ui.set_max_width(largura);
+            egui::ScrollArea::vertical()
+                .id_salt("agenda-editor-scroll")
+                .max_height(altura)
+                .auto_shrink([false, true])
+                .show(ui, |ui| {
+                    ui.label(egui::RichText::new(&canal).strong());
+                    ui.add_space(3.0);
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label("Data:");
+                        let mut data = inicio.split_whitespace().next().unwrap_or("").to_string();
+                        if ui.add(egui::TextEdit::singleline(&mut data)
+                            .desired_width(108.0)).changed() {
+                            let hora = inicio.split_whitespace().nth(1).unwrap_or("19:00");
+                            inicio = format!("{data} {hora}");
+                            programa = None;
                         }
+                        if ui.small_button(if calendario_aberto { "Ocultar calendário" } else { "Calendário" }).clicked() {
+                            calendario_aberto = !calendario_aberto;
+                        }
+                    });
+                    if calendario_aberto {
+                        ui.add_space(4.0);
+                        let anterior = inicio.clone();
+                        escolher_data(ui, &mut inicio, &mut ano, &mut mes);
+                        if anterior != inicio { programa = None; }
                     }
-                }
-            }
-
-            ui.separator();
-            ui.label(egui::RichText::new(
-                "O dispositivo precisa permanecer ligado e com o Saimo TV aberto."
-            ).small());
-            ui.horizontal(|ui| {
-                if ui.button("Agendar").clicked() { salvar = true; }
-                if ui.button("Cancelar").clicked() { cancelar = true; }
-            });
+                    ui.add_space(5.0);
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label("Hora:");
+                        let mut hora = inicio.split_whitespace().nth(1).unwrap_or("19:00").to_string();
+                        if ui.add(egui::TextEdit::singleline(&mut hora)
+                            .desired_width(63.0)).changed() {
+                            let data = inicio.split_whitespace().next().unwrap_or("").to_string();
+                            inicio = format!("{data} {hora}");
+                            programa = None;
+                        }
+                        ui.label("Duração:");
+                        ui.add(egui::TextEdit::singleline(&mut minutos).desired_width(48.0));
+                        ui.label("min");
+                    });
+                    let programas: Vec<epg::Programa> = epg::grade(&canal).into_iter()
+                        .filter(|p| p.fim > epg::agora()).take(8).collect();
+                    if !programas.is_empty() {
+                        ui.add_space(6.0);
+                        egui::ComboBox::from_label("Programação")
+                            .selected_text(programa.as_deref().unwrap_or("Escolher do guia"))
+                            .width((largura - 140.0).max(145.0))
+                            .show_ui(ui, |ui| {
+                                for p in &programas {
+                                    let titulo = format!("{} · {}", p.horario(), p.titulo);
+                                    if ui.selectable_label(
+                                        programa.as_deref() == Some(p.titulo.as_str()),
+                                        titulo
+                                    ).clicked() {
+                                        let inicio_real = p.inicio.max(epg::agora() + 60);
+                                        if let Some(dt) = chrono::DateTime::from_timestamp(inicio_real, 0)
+                                            .map(|x| x.with_timezone(&chrono::Local)) {
+                                            inicio = dt.format("%Y-%m-%d %H:%M").to_string();
+                                            use chrono::Datelike;
+                                            ano = dt.year();
+                                            mes = dt.month();
+                                            minutos = (((p.fim - inicio_real) + 59) / 60)
+                                                .clamp(1, 480).to_string();
+                                            programa = Some(p.titulo.clone());
+                                        }
+                                    }
+                                }
+                            });
+                    }
+                    ui.add_space(7.0);
+                    ui.label(egui::RichText::new(
+                        "O Saimo precisa estar aberto e o computador ligado no horário."
+                    ).small().color(SECUNDARIO));
+                    ui.add_space(7.0);
+                    ui.horizontal(|ui| {
+                        if ui.button("Agendar").clicked() { salvar = true; }
+                        if ui.button("Cancelar").clicked() { cancelar = true; }
+                    });
+                });
         });
+    ctx.data_mut(|d| d.insert_temp(id_cal, calendario_aberto));
     app.agendamento_inicio = inicio;
     app.agendamento_minutos = minutos;
     app.agendamento_ano = ano;
     app.agendamento_mes = mes;
+    app.agendamento_programa = programa;
     if cancelar { app.agendamento_aberto = false; }
     if salvar { app.confirmar_agendamento(); }
+}
+
+/// O mesmo botão do calendário abre este resumo quando há agendamentos.
+pub fn dialogo_lista_agendamentos(app: &mut App, ctx: &egui::Context) {
+    if !app.agendamentos_lista_aberta { return; }
+    let canal = app.tocando.as_ref().and_then(|t| app.canais.get(t.canal))
+        .map(|c| c.nome.clone()).unwrap_or_default();
+    let lista = app.dvr.agendamentos_do_canal(&canal);
+    let mut cancelar_indice = None;
+    let mut novo = false;
+    let mut fechar = false;
+    let largura = (ctx.available_rect().width() - 30.0).clamp(270.0, 385.0);
+    let altura = (ctx.available_rect().height() - 105.0).max(170.0);
+    egui::Window::new("Gravações agendadas")
+        .id(egui::Id::new("dvr-lista-agendamentos"))
+        .anchor(Align2::CENTER_CENTER, egui::Vec2::ZERO)
+        .collapsible(false).resizable(false)
+        .default_width(largura)
+        .show(ctx, |ui| {
+            ui.set_max_width(largura);
+            ui.label(egui::RichText::new(&canal).strong());
+            ui.separator();
+            egui::ScrollArea::vertical()
+                .id_salt("agenda-lista-scroll")
+                .max_height(altura.min(350.0))
+                .show(ui, |ui| {
+                    for (indice, a) in &lista {
+                        let hora = chrono::DateTime::from_timestamp(a.inicio, 0)
+                            .map(|dt| dt.with_timezone(&chrono::Local)
+                                .format("%d/%m/%Y %H:%M").to_string())
+                            .unwrap_or_else(|| "Data inválida".into());
+                        let duracao = ((a.fim - a.inicio) / 60).max(0);
+                        let (status, cor) = if !a.executado {
+                            ("AGUARDANDO", ACENTO)
+                        } else {
+                            match a.status.as_str() {
+                                "gravando" => ("GRAVANDO", Color32::from_rgb(255, 100, 100)),
+                                "processando" => ("PROCESSANDO", Color32::from_rgb(110, 199, 255)),
+                                "concluida" => ("CONCLUÍDA", Color32::from_rgb(120, 220, 170)),
+                                "falhou" => ("FALHOU", Color32::from_rgb(255, 120, 120)),
+                                "perdida" => ("HORÁRIO PERDIDO", Color32::from_rgb(255, 160, 120)),
+                                "cancelada" => ("CANCELADA", SECUNDARIO),
+                                _ => ("EXECUTADA", SECUNDARIO),
+                            }
+                        };
+                        egui::Frame::new().fill(Color32::from_black_alpha(115))
+                            .corner_radius(10.0).inner_margin(9.0)
+                            .show(ui, |ui| {
+                                ui.horizontal(|ui| {
+                                    ui.label(egui::RichText::new(status).color(cor).strong().small());
+                                    ui.label(egui::RichText::new(hora).small());
+                                });
+                                if let Some(titulo) = a.programa.as_deref() {
+                                    ui.label(egui::RichText::new(titulo).strong());
+                                }
+                                ui.horizontal_wrapped(|ui| {
+                                    ui.label(egui::RichText::new(format!(
+                                        "{} min · Fonte {}", duracao, a.fonte + 1
+                                    )).small().color(SECUNDARIO));
+                                    if !a.executado && ui.small_button("Cancelar agenda").clicked() {
+                                        cancelar_indice = Some(*indice);
+                                    }
+                                });
+                            });
+                        ui.add_space(5.0);
+                    }
+                });
+            ui.separator();
+            ui.horizontal(|ui| {
+                if ui.button("+ Novo agendamento").clicked() { novo = true; }
+                if ui.button("Fechar").clicked() { fechar = true; }
+            });
+        });
+    if let Some(indice) = cancelar_indice {
+        if let Err(e) = app.dvr.cancelar_agendamento(indice) {
+            app.aviso = Some((format!("Não foi possível cancelar: {e}"), std::time::Instant::now()));
+        }
+    }
+    if fechar { app.agendamentos_lista_aberta = false; }
+    if novo { app.abrir_agendamento_ao_vivo(); }
 }
