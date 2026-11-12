@@ -820,6 +820,26 @@ fn comuns(app: &mut App, ui: &mut egui::Ui) {
         if botao_redondo(ui, Icone::Teclado, 46.0, "Atalhos do teclado (H)", false).clicked() {
             app.ajuda_aberta = true;
         }
+        // Controle direto no player, sem abrir Ajustes. Os dois estados usam as
+        // mesmas preferências persistentes de Ajustes > Reprodução.
+        if app.tocando_vod.is_some() {
+            let dica_auto = if app.proximo_automatico {
+                "Próximo episódio automático: ligado (desligar)"
+            } else {
+                "Próximo episódio automático: desligado (ligar)"
+            };
+            if botao_redondo(ui, Icone::Proximo, 42.0, dica_auto, app.proximo_automatico).clicked() {
+                app.alternar_proximo_automatico();
+            }
+            let dica_pulos = if app.sugerir_pulos {
+                "Pular abertura/recapitulação: ligado (desligar)"
+            } else {
+                "Pular abertura/recapitulação: desligado (ligar)"
+            };
+            if botao_redondo(ui, Icone::Avancar10, 42.0, dica_pulos, app.sugerir_pulos).clicked() {
+                app.alternar_sugestoes_de_pulo();
+            }
+        }
     });
 }
 
