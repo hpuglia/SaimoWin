@@ -201,11 +201,12 @@ fn validar_fluxos(ffmpeg: &Path, arquivo: &Path) -> Option<(bool, bool)> {
     ))
 }
 
-fn finalizar_em_segundo_plano(pasta: PathBuf, ffmpeg: PathBuf, recuperar: bool) {
+fn finalizar_em_segundo_plano(
+    pasta: PathBuf, ffmpeg: PathBuf, recuperar: bool, eventos: Sender<ResultadoFinal>
+) {
     std::thread::spawn(move || {
         if recuperar {
-            // Se o Saimo caiu mas o filho FFmpeg ainda está finalizando, esperar
-            // os arquivos estabilizarem; nunca unir arquivos em escrita.
+            // O filho FFmpeg pode ainda estar escrevendo se o aplicativo caiu.
             for _ in 0..5 {
                 let antes = bytes_da_sessao(&pasta);
                 std::thread::sleep(Duration::from_secs(15));
@@ -213,60 +214,71 @@ fn finalizar_em_segundo_plano(pasta: PathBuf, ffmpeg: PathBuf, recuperar: bool) 
             }
         }
         let partes = partes_da_sessao(&pasta);
-        if partes.is_empty() { return; }
         let mut estado = ler_estado(&pasta).unwrap_or_else(|| Estado {
             canal: "Gravação recuperada".into(), inicio: String::new(),
             estado: "interrompida".into(), metodo: "ffmpeg -c copy".into(),
             bytes: 0, partes: 0, erro: None, arquivo_final: None,
         });
-        let lista = pasta.join("partes.ffconcat");
-        let mut entradas = String::from("ffconcat version 1.0\n");
-        for arquivo in &partes {
-            entradas.push_str("file '");
-            entradas.push_str(&caminho_local_ffconcat(arquivo).replace('\'', "'\\''"));
-            entradas.push_str("'\n");
-        }
-        if fs::write(&lista, entradas).is_err() { return; }
-        let parcial = pasta.join("gravacao_final.tmp.mkv");
-        let finalizado = pasta.join("gravacao_final.mkv");
-        if finalizado.exists() { return; }
-        let ok = Command::new(&ffmpeg)
-            .current_dir(&pasta)
-            .args(["-hide_banner", "-nostats", "-loglevel", "error", "-y",
-                "-f", "concat", "-safe", "0", "-i"])
-            .arg(&lista)
-            .args(["-map", "0:v:0", "-map", "0:a:0?", "-c", "copy", "-f", "matroska"])
-            .arg(&parcial)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null()).stderr(Stdio::null())
-            .status().is_ok_and(|s| s.success());
-        if ok && fs::metadata(&parcial).is_ok_and(|m| m.len() >= MIN_BYTES)
-            && fs::rename(&parcial, &finalizado).is_ok() {
+        let canal = estado.canal.clone();
+        let resultado: Result<PathBuf, String> = (|| {
+            // Limpa também as gravações bem-sucedidas feitas pela V14.
+            if pasta.join("gravacao_final.mkv").is_file() || estado.arquivo_final.is_some() {
+                return publicar_validado(&pasta, &ffmpeg);
+            }
+            if partes.is_empty() {
+                return Err("Nenhum trecho utilizável para recuperar".into());
+            }
+            let mut entradas = String::from("ffconcat version 1.0\n");
+            for arquivo in &partes {
+                entradas.push_str("file '");
+                entradas.push_str(&caminho_local_ffconcat(arquivo).replace('\'', "'\\''"));
+                entradas.push_str("'\n");
+            }
+            let lista = pasta.join("partes.ffconcat");
+            fs::write(&lista, entradas).map_err(|e| format!("Lista de trechos: {e}"))?;
+            let parcial = pasta.join("gravacao_final.tmp.mkv");
+            let finalizado = pasta.join("gravacao_final.mkv");
+            let ok = Command::new(&ffmpeg)
+                .current_dir(&pasta)
+                .args(["-hide_banner", "-nostats", "-loglevel", "error", "-y",
+                    "-f", "concat", "-safe", "0", "-i"])
+                .arg(&lista)
+                .args(["-map", "0:v:0", "-map", "0:a:0?", "-c", "copy", "-f", "matroska"])
+                .arg(&parcial)
+                .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null())
+                .status().is_ok_and(|status| status.success());
+            if !ok || fs::metadata(&parcial).map_or(true, |m| m.len() < MIN_BYTES) {
+                return Err("União dos trechos falhou; originais preservados".into());
+            }
+            fs::rename(&parcial, &finalizado)
+                .map_err(|e| format!("Preparação do arquivo final: {e}"))?;
+            estado.estado = "finalizada".into();
             let (bytes, qtd) = bytes_da_sessao(&pasta);
             estado.bytes = bytes;
             estado.partes = qtd;
-            match validar_fluxos(&ffmpeg, &finalizado) {
-                Some((true, true)) => estado.estado = "finalizada".into(),
-                Some((true, false)) => {
-                    estado.estado = "finalizada_sem_audio".into();
-                    estado.erro = Some("O arquivo possui vídeo, mas nenhuma faixa de áudio identificada".into());
-                }
-                Some((false, _)) => {
-                    estado.estado = "verificar_arquivo".into();
-                    estado.erro = Some("Não foi identificada uma faixa de vídeo na gravação final".into());
-                }
-                None => {
-                    estado.estado = "finalizada_nao_verificada".into();
-                    estado.erro = Some("Instale ffprobe junto do ffmpeg para validar vídeo e áudio".into());
+            salvar_estado(&pasta, &estado);
+            publicar_validado(&pasta, &ffmpeg)
+        })();
+        let resultado = match resultado {
+            Ok(arquivo) => ResultadoFinal {
+                canal, sucesso: true,
+                mensagem: format!("Gravação pronta: {}",
+                    arquivo.file_name().and_then(|n| n.to_str()).unwrap_or("video.mkv")),
+                arquivo: Some(arquivo),
+            },
+            Err(erro) => {
+                let mut salvo = ler_estado(&pasta).unwrap_or(estado);
+                salvo.estado = "partes_recuperaveis".into();
+                salvo.erro = Some(erro.clone());
+                salvar_estado(&pasta, &salvo);
+                ResultadoFinal {
+                    canal, sucesso: false,
+                    mensagem: format!("DVR: {erro}. Arquivos mantidos para recuperação."),
+                    arquivo: None,
                 }
             }
-            salvar_estado(&pasta, &estado);
-        } else {
-            let _ = fs::remove_file(parcial);
-            estado.estado = "partes_recuperaveis".into();
-            estado.erro = Some("A união falhou. Os trechos MKV continuam disponíveis".into());
-            salvar_estado(&pasta, &estado);
-        }
+        };
+        let _ = eventos.send(resultado);
     });
 }
 
