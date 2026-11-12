@@ -230,6 +230,8 @@ pub struct GravacaoStream {
     iniciada: Instant,
     ultima_verificacao: Instant,
     ultimo_bytes: u64,
+    ultimas_partes: usize,
+    ultima_contagem: Instant,
     ultima_evolucao: Instant,
     pub parada_solicitada: bool,
     parar_em: Option<Instant>,
@@ -258,7 +260,8 @@ impl GravacaoStream {
             canal: canal.nome.clone(), pasta, log, filho, ffmpeg, fonte,
             tentativa: 0, limite: duracao, iniciada: Instant::now(),
             ultima_verificacao: Instant::now(),
-            ultimo_bytes: 0, ultima_evolucao: Instant::now(),
+            ultimo_bytes: 0, ultimas_partes: 0,
+            ultima_contagem: Instant::now(), ultima_evolucao: Instant::now(),
             parada_solicitada: false, parar_em: None, houve_dados: false,
         })
     }
@@ -314,7 +317,17 @@ impl GravacaoStream {
     /// todos os arquivos independentes ficam disponíveis se a união falhar.
     pub fn atualizar(&mut self) -> (bool, Vec<String>) {
         let mut avisos = Vec::new();
-        let (bytes, n) = bytes_da_sessao(&self.pasta);
+        // Numa gravação longa podem existir centenas de trechos. Não percorrer
+        // o diretório a cada frame/segundo em máquinas com HDD lento.
+        let (mut bytes, mut n) = if self.ultima_contagem.elapsed() >= Duration::from_secs(3)
+            || self.ultimo_bytes == 0 || self.parada_solicitada {
+            self.ultima_contagem = Instant::now();
+            let (bytes, n) = bytes_da_sessao(&self.pasta);
+            self.ultimas_partes = n;
+            (bytes, n)
+        } else {
+            (self.ultimo_bytes, self.ultimas_partes)
+        };
         if bytes > 0 && !self.houve_dados {
             self.houve_dados = true;
             avisos.push(format!(
@@ -352,6 +365,8 @@ impl GravacaoStream {
         match self.filho.try_wait() {
             Ok(None) => (true, avisos),
             Ok(Some(status)) => {
+                // Nunca usar dados em cache para decidir se a gravação falhou.
+                (bytes, n) = bytes_da_sessao(&self.pasta);
                 if bytes == 0 && !self.parada_solicitada && self.tentativa == 0
                     && e_playlist_hls(&self.fonte.url) {
                     self.tentativa = 1;
