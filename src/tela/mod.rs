@@ -243,6 +243,7 @@ pub fn desenhar(app: &mut App, ui: &mut egui::Ui) {
         || app.episodios_no_player
         || app.ajuda_aberta
         || app.agendamento_aberto
+        || app.agendamentos_lista_aberta
         || app.gravacao_dialogo_aberto
         || app.dialogo_listas.is_some()
         || app.nova_versao.is_some()
