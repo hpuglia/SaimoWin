@@ -867,6 +867,8 @@ pub fn pagina(app: &mut App, ui: &mut egui::Ui) {
             "Não deu para carregar a agenda agora. Tentando de novo em um minuto."
         } else if app.aba == Aba::Eventos && app.eventos_carregados {
             "Nenhum jogo nos canais da lista agora. A agenda se atualiza sozinha."
+        } else if app.aba == Aba::Radios && app.radios_somente_favoritas {
+            "Nenhuma rádio favorita. Volte a Todas as rádios e toque na estrela de uma estação."
         } else if app.aba == Aba::Radios && app.radios.is_empty() && !app.buscando_radios() {
             "Sem rádios por enquanto. Confira a internet e abra de novo."
         } else {
