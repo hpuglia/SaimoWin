@@ -722,6 +722,40 @@ fn barra_do_ao_vivo(app: &mut App, ui: &mut egui::Ui, area: Rect) {
         pintor.galley(caixa.center() - galeria.size() / 2.0, galeria, TEXTO);
         fim = caixa.left() - 8.0;
     }
+    // DVR num grupo isolado ACIMA do selo AO VIVO. Nunca compartilhar
+    // o layout do volume: em janelas pequenas os controles se sobrepunham.
+    // Esta barra só é desenhada quando controles_visiveis(), então some
+    // naturalmente com o restante da interface.
+    if app.tocando_vod.is_none() {
+        let largura = 3.0 * 42.0 + 2.0 * 9.0;
+        let botoes = Rect::from_min_size(
+            Pos2::new((direita - largura).max(esquerda), topo_bloco - 58.0),
+            egui::vec2(largura, 44.0),
+        );
+        ui.scope_builder(
+            egui::UiBuilder::new()
+                .max_rect(botoes)
+                .layout(egui::Layout::left_to_right(egui::Align::Center)),
+            |ui| {
+                ui.spacing_mut().item_spacing.x = 9.0;
+                let gravando = app.dvr.ativo_no_canal(&nome);
+                if botao_redondo(ui, Icone::Agendar, 42.0, "Agendar gravação", false).clicked() {
+                    app.abrir_agendamento_ao_vivo();
+                }
+                if botao_redondo(
+                    ui, Icone::Gravar, 42.0,
+                    if gravando { "Parar gravação" } else { "Gravar agora: até parar ou definir duração" },
+                    gravando,
+                ).clicked() {
+                    app.alternar_gravacao_ao_vivo();
+                }
+                if botao_redondo(ui, Icone::Captura, 42.0, "Salvar captura de tela (PNG)", false).clicked() {
+                    app.capturar_ao_vivo();
+                }
+            },
+        );
+    }
+
     pintor.text(Pos2::new(x, topo_bloco + 14.0), Align2::LEFT_CENTER, (indice + 1).to_string(), forte(24.0), ACENTO);
     let x_nome = x + 14.0 + 16.0 * (indice + 1).to_string().len() as f32;
     texto_numa_linha(&pintor, &nome, forte(26.0), TEXTO, Pos2::new(x_nome, topo_bloco + 14.0), fim - x_nome - 10.0);
@@ -819,21 +853,6 @@ fn comuns(app: &mut App, ui: &mut egui::Ui) {
         }
         if botao_redondo(ui, Icone::Teclado, 46.0, "Atalhos do teclado (H)", false).clicked() {
             app.ajuda_aberta = true;
-        }
-        if app.tocando.is_some() && app.tocando_vod.is_none() {
-            if botao_redondo(ui, Icone::Agendar, 42.0, "Agendar gravação: PC ligado e Saimo aberto", false).clicked() {
-                app.abrir_agendamento_ao_vivo();
-            }
-            let gravando = app.tocando.as_ref()
-                .and_then(|t| app.canais.get(t.canal))
-                .is_some_and(|c| app.dvr.ativo_no_canal(&c.nome));
-            let dica = if gravando { "Parar gravação" } else { "Gravar canal agora (até 4 horas)" };
-            if botao_redondo(ui, Icone::Gravar, 42.0, dica, gravando).clicked() {
-                app.alternar_gravacao_ao_vivo();
-            }
-            if botao_redondo(ui, Icone::Captura, 42.0, "Capturar quadro de vídeo (PNG)", false).clicked() {
-                app.capturar_ao_vivo();
-            }
         }
         // Controle direto no player, sem abrir Ajustes. Os dois estados usam as
         // mesmas preferências persistentes de Ajustes > Reprodução.
