@@ -761,14 +761,14 @@ fn barra_do_ao_vivo(app: &mut App, ui: &mut egui::Ui, area: Rect) {
                 }
                 // Anel colorido sobre o próprio botão, com texto compacto logo
                 // acima. Não ocupa o controle de volume nem os botões originais.
-                if fase != Fase::Parado {
+                {
                     let (rotulo, cor) = match fase {
                         Fase::Iniciando => ("PREPARANDO", Color32::from_rgb(246, 194, 78)),
                         Fase::Gravando => ("GRAVANDO", Color32::from_rgb(255, 84, 84)),
                         Fase::Processando => ("PROCESSANDO", Color32::from_rgb(110, 199, 255)),
                         Fase::Concluido => ("SALVO", Color32::from_rgb(100, 225, 164)),
                         Fase::Erro => ("ERRO", Color32::from_rgb(255, 112, 112)),
-                        Fase::Parado => unreachable!(),
+                        Fase::Parado => ("PARADO", Color32::from_gray(162)),
                     };
                     let pintor = ui.ctx().layer_painter(egui::LayerId::new(
                         egui::Order::Foreground, egui::Id::new("dvr-indicador")
