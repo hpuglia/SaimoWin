@@ -359,6 +359,8 @@ struct App {
     pub dvr: dvr::Dvr,
     pub pasta_gravacoes_texto: String,
     pub agendamento_aberto: bool,
+    pub agendamentos_lista_aberta: bool,
+    pub agendamento_programa: Option<String>,
     pub agendamento_inicio: String,
     pub agendamento_minutos: String,
     pub agendamento_mes: u32,
@@ -705,6 +707,8 @@ impl App {
             dvr: dvr::Dvr::novo(),
             pasta_gravacoes_texto: dvr::pasta().display().to_string(),
             agendamento_aberto: false,
+            agendamentos_lista_aberta: false,
+            agendamento_programa: None,
             agendamento_inicio: (chrono::Local::now() + chrono::Duration::minutes(5)).format("%Y-%m-%d %H:%M").to_string(),
             agendamento_minutos: "60".into(),
             agendamento_mes: chrono::Local::now().format("%m").to_string().parse().unwrap_or(1),
@@ -3693,7 +3697,21 @@ vec4 hook() {{
         }
     }
 
+    pub fn botao_agendar_ao_vivo(&mut self) {
+        let Some(nome) = self.tocando.as_ref()
+            .and_then(|t| self.canais.get(t.canal)).map(|c| c.nome.clone()) else { return };
+        if !self.dvr.agendamentos_do_canal(&nome).is_empty() {
+            self.agendamentos_lista_aberta = true;
+            self.agendamento_aberto = false;
+            self.mostrar_controles();
+        } else {
+            self.abrir_agendamento_ao_vivo();
+        }
+    }
+
     pub fn abrir_agendamento_ao_vivo(&mut self) {
+        self.agendamentos_lista_aberta = false;
+        self.agendamento_programa = None;
         let Some(t) = self.tocando.as_ref() else { return; };
         let Some(canal) = self.canais.get(t.canal) else { return; };
         // Se houver programação, sugerir o horário do próximo programa.
@@ -3715,12 +3733,16 @@ vec4 hook() {{
         let Some(canal) = self.canais.get(indice) else { return; };
         let minutos = self.agendamento_minutos.trim().parse::<u32>();
         let resultado = minutos.map_err(|_| "Informe a duração em minutos".to_string())
-            .and_then(|min| self.dvr.agendar(&canal.nome, fonte, &self.agendamento_inicio, min));
+            .and_then(|min| self.dvr.agendar(
+                &canal.nome, fonte, &self.agendamento_inicio, min,
+                self.agendamento_programa.clone(),
+            ));
         match resultado {
             Ok(()) => {
                 self.agendamento_aberto = false;
+                self.agendamentos_lista_aberta = true;
                 self.aviso = Some((
-                    "Gravação agendada. O DVR direto será iniciado no horário, com salvamento por partes; mantenha o Saimo aberto e o PC ligado.".into(),
+                    "Gravação agendada. Confira o horário no ícone de calendário.".into(),
                     Instant::now(),
                 ));
             }
