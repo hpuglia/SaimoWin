@@ -229,6 +229,7 @@ pub fn desenhar(app: &mut App, ui: &mut egui::Ui) {
         janelas::listas(app, ctx);
     }
     aovivo::dialogo_agendamento(app, ctx);
+    aovivo::dialogo_lista_agendamentos(app, ctx);
     aovivo::dialogo_gravacao_manual(app, ctx);
 
     // Decidir o cursor por último: on_hover_cursor dos botões pode sobrescrever
