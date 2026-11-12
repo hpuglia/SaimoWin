@@ -1,7 +1,7 @@
 name: SaimoWin DVR Windows tests
 on:
   push:
-    branches: [ "feature/dvr-direto-segmentado", "fix/auto-hide-mouse-cursor" ]
+    branches: [ "feature/dvr-limpeza-status-v15", "feature/dvr-direto-segmentado", "fix/auto-hide-mouse-cursor" ]
   workflow_dispatch:
 permissions:
   contents: read
