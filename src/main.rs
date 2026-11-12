@@ -424,6 +424,8 @@ struct App {
     pub upscaling: u8,
     pub audio_inteligente: bool,
     pub zero_delay: u8,
+    /// Padrão desligado: o mpv não deve escolher legendas automaticamente.
+    pub legendas_automaticas: bool,
     /// Altura do vídeo que está tocando (para desligar o deband em vídeo que já é do tamanho do alvo).
     altura_do_video: u32,
     pub gpu_nome: &'static str,
@@ -767,6 +769,8 @@ impl App {
                 .ok()
                 .and_then(|s| s.trim().parse::<u8>().ok())
                 .unwrap_or(0),
+            legendas_automaticas: std::fs::read_to_string(catalogo::pasta().join("legendas-automaticas.txt"))
+                .ok().map(|v| v.trim() == "1").unwrap_or(false),
             gpu_nome: detectar_gpu(cc),
             ultimo_mouse: None,
             retomou_canal: false,
@@ -1328,6 +1332,9 @@ impl App {
         // legenda escolhida — que segue junto para o arquivo novo.
         let anterior = self.tocando_vod.take().filter(|t| t.titulo == titulo);
         let legenda = anterior.as_ref().and_then(|t| t.legenda_escolhida.as_ref().map(|(_, c)| c.clone()));
+        // Uma faixa escolhida manualmente permanece na troca de fonte.
+        // Nas demais reproduções, o padrão é nenhuma legenda selecionada.
+        mpv.definir("sid", if self.legendas_automaticas || legenda.is_some() { "auto" } else { "no" });
         mpv.tocar_com_legenda(&url, None, None, legenda.as_deref());
         mpv.pausa(false);
         self.pausado = false;
@@ -1456,6 +1463,27 @@ impl App {
             let caminho = legendas::baixar(&opcao);
             let _ = emissor.send(Recado::LegendaPronta(titulo, opcao, caminho));
         });
+    }
+
+    /// Preferência deste dispositivo: legendas embutidas e externas
+    /// não ligam sozinhas quando esta opção está desligada.
+    pub fn alternar_legendas_automaticas(&mut self) {
+        self.legendas_automaticas = !self.legendas_automaticas;
+        let _ = std::fs::write(
+            catalogo::pasta().join("legendas-automaticas.txt"),
+            if self.legendas_automaticas { "1" } else { "0" },
+        );
+        if let Some(mpv) = self.mpv.as_ref() {
+            mpv.escolher_faixa(
+                "sub",
+                if self.legendas_automaticas { Some("auto") } else { None },
+            );
+        }
+        if !self.legendas_automaticas {
+            if let Some(t) = self.tocando_vod.as_mut() {
+                t.legenda_escolhida = None;
+            }
+        }
     }
 
     pub fn desligar_legendas(&mut self) {
@@ -1812,6 +1840,7 @@ impl App {
             self.tocando = None;
             return;
         };
+        mpv.definir("sid", if self.legendas_automaticas { "auto" } else { "no" });
         mpv.tocar_ao_vivo(&f.url, f.referer.as_deref(), f.agente.as_deref());
         mpv.pausa(false);
         self.pausado = false;
@@ -2116,7 +2145,7 @@ impl App {
                     let automatica = lista.iter().find(|o| o.idioma == idioma).cloned();
                     if let Some(t) = self.tocando_vod.as_mut().filter(|t| t.titulo == titulo) {
                         t.legendas = lista;
-                        if !idioma.is_empty() && t.legenda_escolhida.is_none() {
+                        if self.legendas_automaticas && !idioma.is_empty() && t.legenda_escolhida.is_none() {
                             if let Some(o) = automatica {
                                 self.escolher_legenda(o);
                             }
@@ -3751,6 +3780,7 @@ vec4 hook() {{
         if let Ok(Some(p)) = self.dvr.parar_no_player(mpv) {
             self.aviso = Some((format!("Gravação encerrada: {}", p.display()), Instant::now()));
         }
+        mpv.definir("sid", "no");
         mpv.tocar_ao_vivo(&radio.url, None, None);
         mpv.pausa(false);
         self.pausado = false;
