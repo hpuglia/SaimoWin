@@ -162,9 +162,18 @@ pub struct Dvr {
 
 impl Dvr {
     pub fn novo() -> Self {
-        let agendados = fs::read_to_string(catalogo::pasta().join(AGENDA)).ok()
+        let mut agendados = fs::read_to_string(catalogo::pasta().join(AGENDA)).ok()
             .and_then(|s| serde_json::from_str::<Vec<Agendamento>>(&s).ok())
             .unwrap_or_default();
+        let mut recuperar_agenda = false;
+        for a in &mut agendados {
+            if a.executado && matches!(
+                a.status.as_str(), "iniciando" | "gravando" | "processando"
+            ) {
+                a.status = "interrompida".into();
+                recuperar_agenda = true;
+            }
+        }
         let mut avisos_iniciais = Vec::new();
         let (eventos_tx, eventos_rx) = mpsc::channel();
         if let Ok(binario) = ffmpeg() {
@@ -177,11 +186,13 @@ impl Dvr {
                 ));
             }
         }
-        Self {
+        let dvr = Self {
             ativos: Vec::new(), agendados, avisos_iniciais,
             eventos_tx, eventos_rx, processando: HashSet::new(),
             recente: HashMap::new(),
-        }
+        };
+        if recuperar_agenda { dvr.salvar_agenda(); }
+        dvr
     }
 
     fn salvar_agenda(&self) {
@@ -351,7 +362,8 @@ impl Dvr {
             };
             self.recente.insert(evento.canal.clone(), (fase, Instant::now()));
             for a in &mut self.agendados {
-                if a.canal == evento.canal && (a.status == "iniciando" || a.status == "gravando" || a.status == "processando") {
+                if a.canal == evento.canal && (a.status == "iniciando" || a.status == "gravando"
+                    || a.status == "processando" || a.status == "interrompida") {
                     a.status = if evento.sucesso { "concluida" } else { "falhou" }.into();
                 }
             }
