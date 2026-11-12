@@ -24,6 +24,7 @@ mod progresso;
 mod pulos;
 mod radios;
 mod dvr;
+mod gravacao_obs;
 mod legendas;
 mod midia;
 mod bateria;
@@ -184,6 +185,8 @@ enum Recado {
     Temporada,
     /// A procura pedida nos Ajustes não achou versão nova.
     SemAtualizacao,
+    /// OBS controla a captura de janela + áudio em thread separada da interface.
+    GravacaoObs { iniciar: bool, resultado: Result<gravacao_obs::Resultado, String> },
 }
 
 /// Ordem da grade pelos detalhes do TMDB.
@@ -365,6 +368,15 @@ struct App {
     pub gravacao_dialogo_aberto: bool,
     pub gravacao_com_limite: bool,
     pub gravacao_minutos: String,
+    /// Captura a saída renderizada + áudio via cena configurada no OBS.
+    pub gravacao_motor_obs: bool,
+    pub obs_cena: String,
+    /// Senha OBS é mantida somente em memória e nunca vai para o arquivo.
+    pub obs_senha: String,
+    pub obs_gravando: bool,
+    pub obs_ocupado: bool,
+    obs_fim_em: Option<Instant>,
+    obs_duracao_pendente: Option<u64>,
     ultima_verificacao_dvr: Instant,
     logos: HashMap<String, Option<egui::TextureHandle>>,
     /// Chave no mapa, endereço e o lado máximo em pixels.
@@ -711,6 +723,14 @@ impl App {
             gravacao_dialogo_aberto: false,
             gravacao_com_limite: false,
             gravacao_minutos: "60".into(),
+            gravacao_motor_obs: true,
+            obs_cena: std::fs::read_to_string(catalogo::pasta().join("obs-cena.txt"))
+                .unwrap_or_else(|_| "Saimo TV".into()).trim().to_string(),
+            obs_senha: String::new(),
+            obs_gravando: false,
+            obs_ocupado: false,
+            obs_fim_em: None,
+            obs_duracao_pendente: None,
             ultima_verificacao_dvr: Instant::now(),
             logos: HashMap::new(),
             pedidos_de_logo: Vec::new(),
@@ -2119,6 +2139,30 @@ impl App {
                 Recado::Radios(lista) => {
                     self.buscando_radios = false;
                     self.radios = lista;
+                }
+                Recado::GravacaoObs { iniciar, resultado } => {
+                    self.obs_ocupado = false;
+                    let mensagem = match resultado {
+                        Ok(resp) => {
+                            self.obs_gravando = resp.gravando;
+                            self.obs_fim_em = if resp.gravando {
+                                self.obs_duracao_pendente.take()
+                                    .map(|s| Instant::now() + Duration::from_secs(s))
+                            } else {
+                                self.obs_duracao_pendente = None;
+                                None
+                            };
+                            resp.mensagem
+                        }
+                        Err(e) => {
+                            if !iniciar && e.contains("OBS encerrou") {
+                                self.obs_gravando = false;
+                                self.obs_fim_em = None;
+                            }
+                            format!("OBS: {e}")
+                        }
+                    };
+                    self.aviso = Some((mensagem, Instant::now()));
                 }
                 Recado::Gavetas(lista) => self.gavetas = lista,
                 Recado::Acervo(lista) => self.acervo = lista,
@@ -3648,9 +3692,28 @@ vec4 hook() {{
         self.aviso = Some((texto, Instant::now()));
     }
 
+    /// OBS atua como gravador da janela reproduzida (vídeo + áudio)
+    /// independentemente de HLS, extensões de segmento e buffer.
+    fn comandar_obs(&mut self, iniciar: bool) {
+        if self.obs_ocupado { return; }
+        self.obs_ocupado = true;
+        let cena = self.obs_cena.clone();
+        let senha = self.obs_senha.clone();
+        let emissor = self.emissor.clone();
+        std::thread::spawn(move || {
+            let resultado = gravacao_obs::controlar(iniciar, &cena, &senha);
+            let _ = emissor.send(Recado::GravacaoObs { iniciar, resultado });
+        });
+    }
+
     /// No primeiro clique, oferecer gravação livre ou com duração.
     /// Se já está gravando o canal, o clique encerra o arquivo.
     pub fn alternar_gravacao_ao_vivo(&mut self) {
+        if self.obs_ocupado { return; }
+        if self.obs_gravando {
+            self.comandar_obs(false);
+            return;
+        }
         let Some(indice) = self.tocando.as_ref().map(|t| t.canal) else { return };
         let Some(nome) = self.canais.get(indice).map(|c| c.nome.clone()) else { return };
         if self.dvr.ativo_no_canal(&nome) {
@@ -3695,6 +3758,16 @@ vec4 hook() {{
                 }
             }
         } else { None };
+        if self.gravacao_motor_obs {
+            self.obs_duracao_pendente = duracao;
+            self.gravacao_dialogo_aberto = false;
+            self.comandar_obs(true);
+            self.aviso = Some((
+                "Conectando ao OBS. A captura só será confirmada quando o OBS estiver gravando.".into(),
+                Instant::now(),
+            ));
+            return;
+        }
         let resultado = self.mpv.as_deref().ok_or("Player indisponível".to_string())
             .and_then(|mpv| self.dvr.iniciar_no_player(&canal.nome, mpv, duracao));
         match resultado {
@@ -4292,6 +4365,13 @@ impl eframe::App for App {
         }
         self.cuidar_dos_recados(ctx);
         self.cuidar_dos_eventos(ctx);
+        if self.obs_gravando && !self.obs_ocupado
+            && self.obs_fim_em.is_some_and(|fim| Instant::now() >= fim) {
+            self.comandar_obs(false);
+        }
+        if self.obs_gravando || self.obs_ocupado {
+            ctx.request_repaint_after(Duration::from_secs(1));
+        }
         if self.ultima_verificacao_dvr.elapsed() >= Duration::from_secs(1) {
             self.ultima_verificacao_dvr = Instant::now();
             for recado in self.dvr.atualizar(&self.canais, self.mpv.as_deref()) {
