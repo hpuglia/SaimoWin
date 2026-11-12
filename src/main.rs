@@ -515,6 +515,8 @@ struct App {
     /// Temporadas já pedidas ao TMDB (id, número).
     temporadas_pedidas: std::collections::HashSet<(u32, u32)>,
     pub radios: Vec<radios::Radio>,
+    /// Filtro visual da aba Rádios: Todos ou Favoritos.
+    pub radios_somente_favoritas: bool,
     buscando_radios: bool,
     pub radio: Option<TocandoRadio>,
     colecoes_pedidas: bool,
@@ -809,6 +811,7 @@ impl App {
             fichas_pedidas: std::collections::HashSet::new(),
             temporadas_pedidas: std::collections::HashSet::new(),
             radios: radios::locais(),
+            radios_somente_favoritas: false,
             buscando_radios: false,
             radio: None,
             colecoes_pedidas: false,
