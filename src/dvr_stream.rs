@@ -26,10 +26,19 @@ fn e_playlist_hls(url: &str) -> bool {
 fn args_hls(url: &str, tentativa: u8) -> Vec<String> {
     let mut args = Vec::new();
     if e_playlist_hls(url) && tentativa > 0 {
-        // Permitir apenas extensões de mídia conhecidas e o sufixo .woff
-        // observado em alguns segmentos disfarçados; NUNCA usar ALL.
-        // Não remove as verificações de tipo de mídia do FFmpeg.
-        args.extend(["-allowed_extensions".into(), EXT_HLS.into()]);
+        // O HLS de alguns canais usa segmentos MPEG-TS com extensão .woff.
+        // O FFmpeg moderno aplica dois filtros de extensões; ambos precisam
+        // da lista explícita. A checagem formato x extensão também rejeita
+        // MPEG-TS válido com nome .woff, portanto o fallback a desativa
+        // SOMENTE na segunda tentativa de uma playlist HLS identificada,
+        // mantendo uma lista restrita e protocolos de rede limitados.
+        // Nunca usar ALL nem aplicar esse ajuste globalmente.
+        args.extend([
+            "-allowed_extensions".into(), EXT_HLS.into(),
+            "-allowed_segment_extensions".into(), EXT_HLS.into(),
+            "-extension_picky".into(), "0".into(),
+            "-protocol_whitelist".into(), "http,https,tcp,tls,crypto".into(),
+        ]);
     }
     if e_playlist_texto(url) {
         // Igual ao demuxer-lavf-format=hls que o Saimo já usa no mpv.
@@ -439,6 +448,8 @@ mod testes {
             vec!["-f".to_string(), "hls".to_string()]);
         let alternativo = args_hls("https://exemplo.test/live.txt", 1);
         assert!(alternativo.contains(&"-allowed_extensions".to_string()));
+        assert!(alternativo.contains(&"-allowed_segment_extensions".to_string()));
+        assert!(alternativo.windows(2).any(|p| p == ["-extension_picky", "0"]));
         assert!(!alternativo.contains(&"ALL".to_string()));
     }
 
