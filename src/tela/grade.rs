@@ -316,6 +316,8 @@ pub fn ajustes(app: &mut App, ui: &mut egui::Ui) {
     });
 
     let mut acao: Option<u8> = None;
+    let mut salvar_pasta_dvr = false;
+    let mut pasta_dvr = app.pasta_gravacoes_texto.clone();
     ui.scope_builder(egui::UiBuilder::new().max_rect(direita), |ui| {
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             ui.set_max_width(direita.width().min(760.0));
@@ -358,6 +360,20 @@ pub fn ajustes(app: &mut App, ui: &mut egui::Ui) {
             if linha(ui, "Som", &if app.mudo { "Sem som".to_string() } else { format!("Volume {}%", app.volume) }, if app.mudo { Icone::Mudo } else { Icone::Som }).clicked() {
                 acao = Some(2);
             }
+            ui.add_space(18.0);
+            rotulo_de_secao(ui, "Gravações de TV");
+            ui.add_space(4.0);
+            ui.label(egui::RichText::new("Pasta de gravações e capturas neste dispositivo").font(forte(17.0)).color(TEXTO));
+            ui.horizontal(|ui| {
+                ui.add(egui::TextEdit::singleline(&mut pasta_dvr).desired_width((direita.width() - 160.0).max(200.0)));
+                if ui.button("Salvar pasta").clicked() {
+                    salvar_pasta_dvr = true;
+                }
+            });
+            ui.label(egui::RichText::new(format!("Padrão do sistema: {}", crate::dvr::pasta_padrao().display())).color(SECUNDARIO));
+            ui.label(egui::RichText::new("Use um caminho absoluto. Deixe vazio e salve para restaurar o padrão.").color(SECUNDARIO));
+            ui.label(egui::RichText::new(format!("Agendamentos pendentes: {} · O PC precisa permanecer ligado e com o Saimo aberto",
+                app.dvr.quantidade_agendada())).color(SECUNDARIO));
             ui.add_space(18.0);
             rotulo_de_secao(ui, "Listas");
             ui.add_space(4.0);
@@ -427,6 +443,17 @@ pub fn ajustes(app: &mut App, ui: &mut egui::Ui) {
             ui.add_space(40.0);
         });
     });
+    app.pasta_gravacoes_texto = pasta_dvr;
+    if salvar_pasta_dvr {
+        let texto = match crate::dvr::configurar_pasta(&app.pasta_gravacoes_texto) {
+            Ok(destino) => {
+                app.pasta_gravacoes_texto = destino.display().to_string();
+                format!("Gravações e capturas serão salvas em {}", destino.display())
+            }
+            Err(erro) => format!("Não foi possível salvar a pasta: {erro}"),
+        };
+        app.aviso = Some((texto, std::time::Instant::now()));
+    }
     match acao {
         Some(0) => app.alternar_preencher(),
         Some(7) => app.alternar_upscaling(),
