@@ -843,7 +843,7 @@ fn comuns(app: &mut App, ui: &mut egui::Ui) {
             } else {
                 "Próximo episódio automático: desligado (ligar)"
             };
-            if botao_redondo(ui, Icone::Proximo, 42.0, dica_auto, app.proximo_automatico).clicked() {
+            if botao_redondo(ui, Icone::ProximoAutomatico, 42.0, dica_auto, app.proximo_automatico).clicked() {
                 app.alternar_proximo_automatico();
             }
             let dica_pulos = if app.sugerir_pulos {
@@ -851,7 +851,7 @@ fn comuns(app: &mut App, ui: &mut egui::Ui) {
             } else {
                 "Pular abertura/recapitulação: desligado (ligar)"
             };
-            if botao_redondo(ui, Icone::Avancar10, 42.0, dica_pulos, app.sugerir_pulos).clicked() {
+            if botao_redondo(ui, Icone::PularAbertura, 42.0, dica_pulos, app.sugerir_pulos).clicked() {
                 app.alternar_sugestoes_de_pulo();
             }
         }
