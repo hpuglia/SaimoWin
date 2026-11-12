@@ -246,8 +246,8 @@ impl Dvr {
 
     pub fn iniciar(&mut self, canal: &catalogo::Canal, indice: usize, duracao: Option<u64>) -> Result<PathBuf, String> {
         if self.ativos.len() >= 3 { return Err("Limite de três gravações simultâneas".into()); }
-        if self.ativo_no_canal(&canal.nome) {
-            return Err("Este canal já está sendo gravado".into());
+        if self.ativo_no_canal(&canal.nome) || self.processando.contains(&canal.nome) {
+            return Err("Este canal já está gravando ou finalizando um arquivo".into());
         }
         let ffmpeg = ffmpeg()?;
         let rec = crate::dvr_stream::GravacaoStream::iniciar(
@@ -298,26 +298,19 @@ impl Dvr {
     /// Roda a cada segundo, sem bloquear a interface.
     pub fn atualizar(&mut self, canais: &[catalogo::Canal]) -> Vec<String> {
         let mut avisos = std::mem::take(&mut self.avisos_iniciais);
-        while let Ok(evento) = self.eventos_rx.try_recv() {
-            self.processando.remove(&evento.canal);
-            let fase = if evento.sucesso {
-                FaseGravacao::Concluido
-            } else {
-                FaseGravacao::Erro
-            };
-            self.recente.insert(evento.canal.clone(), (fase, Instant::now()));
-            for a in &mut self.agendados {
-                if a.canal == evento.canal && (a.status == "gravando" || a.status == "processando") {
-                    a.status = if evento.sucesso { "concluida" } else { "falhou" }.into();
-                }
-            }
-            self.salvar_agenda();
-            avisos.push(evento.mensagem);
-        }
         let mut i = 0;
+        let mut agenda_alterada = false;
         while i < self.ativos.len() {
             let (ativa, mensagens) = self.ativos[i].atualizar();
             avisos.extend(mensagens);
+            if self.ativos[i].tem_dados() {
+                for a in &mut self.agendados {
+                    if a.canal == self.ativos[i].canal && a.status == "iniciando" {
+                        a.status = "gravando".into();
+                        agenda_alterada = true;
+                    }
+                }
+            }
             if ativa {
                 i += 1;
             } else {
@@ -325,7 +318,8 @@ impl Dvr {
                 if concluida.tem_dados() && concluida.tem_finalizacao() {
                     self.processando.insert(concluida.canal.clone());
                     for a in &mut self.agendados {
-                        if a.canal == concluida.canal && a.status == "gravando" {
+                        if a.canal == concluida.canal
+                            && (a.status == "iniciando" || a.status == "gravando") {
                             a.status = "processando".into();
                         }
                     }
@@ -335,7 +329,8 @@ impl Dvr {
                     );
                 } else {
                     for a in &mut self.agendados {
-                        if a.canal == concluida.canal && a.status == "gravando" {
+                        if a.canal == concluida.canal
+                            && (a.status == "iniciando" || a.status == "gravando") {
                             a.status = "falhou".into();
                         }
                     }
@@ -345,6 +340,23 @@ impl Dvr {
                     );
                 }
             }
+        }
+        if agenda_alterada { self.salvar_agenda(); }
+        while let Ok(evento) = self.eventos_rx.try_recv() {
+            self.processando.remove(&evento.canal);
+            let fase = if evento.sucesso {
+                FaseGravacao::Concluido
+            } else {
+                FaseGravacao::Erro
+            };
+            self.recente.insert(evento.canal.clone(), (fase, Instant::now()));
+            for a in &mut self.agendados {
+                if a.canal == evento.canal && (a.status == "iniciando" || a.status == "gravando" || a.status == "processando") {
+                    a.status = if evento.sucesso { "concluida" } else { "falhou" }.into();
+                }
+            }
+            self.salvar_agenda();
+            avisos.push(evento.mensagem);
         }
         self.recente.retain(|_, (_, t)| t.elapsed() < Duration::from_secs(30));
 
@@ -374,7 +386,7 @@ impl Dvr {
                 };
                 match resultado {
                     Ok(()) => {
-                        self.agendados[i].status = "gravando".into();
+                        self.agendados[i].status = "iniciando".into();
                         avisos.push(format!("DVR: agendamento iniciado — {}", a.canal));
                     }
                     Err(e) => {
