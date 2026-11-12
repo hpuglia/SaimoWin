@@ -6,6 +6,20 @@ use chrono::{Local, NaiveDateTime, TimeZone};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::collections::{HashMap, HashSet};
+use std::sync::mpsc::{self, Sender, Receiver};
+use std::time::{Duration, Instant};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FaseGravacao {
+    Parado,
+    Iniciando,
+    Gravando,
+    Processando,
+    Concluido,
+    Erro,
+}
+
 use std::process::{Command, Stdio};
 
 const CONFIG: &str = "gravacoes-config.json";
@@ -136,6 +150,10 @@ pub struct Dvr {
     ativos: Vec<crate::dvr_stream::GravacaoStream>,
     agendados: Vec<Agendamento>,
     avisos_iniciais: Vec<String>,
+    eventos_tx: Sender<crate::dvr_stream::ResultadoFinal>,
+    eventos_rx: Receiver<crate::dvr_stream::ResultadoFinal>,
+    processando: HashSet<String>,
+    recente: HashMap<String, (FaseGravacao, Instant)>,
 }
 
 impl Dvr {
@@ -144,17 +162,22 @@ impl Dvr {
             .and_then(|s| serde_json::from_str::<Vec<Agendamento>>(&s).ok())
             .unwrap_or_default();
         let mut avisos_iniciais = Vec::new();
+        let (eventos_tx, eventos_rx) = mpsc::channel();
         if let Ok(binario) = ffmpeg() {
             let recuperadas = crate::dvr_stream::recuperar_sessoes(
-                &pasta().join("Gravacoes"), &binario
+                &pasta().join("Gravacoes"), &binario, eventos_tx.clone()
             );
             if recuperadas > 0 {
                 avisos_iniciais.push(format!(
-                    "DVR recuperando {recuperadas} sessão(ões) interrompida(s). Os trechos permanecem salvos."
+                    "DVR organizando/recuperando {recuperadas} gravação(ões) anteriores."
                 ));
             }
         }
-        Self { ativos: Vec::new(), agendados, avisos_iniciais }
+        Self {
+            ativos: Vec::new(), agendados, avisos_iniciais,
+            eventos_tx, eventos_rx, processando: HashSet::new(),
+            recente: HashMap::new(),
+        }
     }
 
     fn salvar_agenda(&self) {
@@ -166,7 +189,25 @@ impl Dvr {
         }
     }
 
-    pub fn gravando(&self) -> bool { !self.ativos.is_empty() }
+    pub fn gravando(&self) -> bool {
+        !self.ativos.is_empty() || !self.processando.is_empty()
+    }
+
+    pub fn fase_do_canal(&self, canal: &str) -> FaseGravacao {
+        if let Some(r) = self.ativos.iter().find(|r| r.canal == canal) {
+            if r.parada_solicitada { return FaseGravacao::Processando; }
+            return if r.tem_dados() { FaseGravacao::Gravando }
+                else { FaseGravacao::Iniciando };
+        }
+        if self.processando.contains(canal) { return FaseGravacao::Processando; }
+        if let Some((fase, desde)) = self.recente.get(canal) {
+            if desde.elapsed() < Duration::from_secs(14) { return *fase; }
+        }
+        FaseGravacao::Parado
+    }
+
+    pub fn ativos_totais(&self) -> usize { self.ativos.len() }
+
     pub fn ha_agenda(&self) -> bool { self.agendados.iter().any(|a| !a.executado) }
     pub fn quantidade_agendada(&self) -> usize {
         self.agendados.iter().filter(|a| !a.executado).count()
@@ -182,8 +223,10 @@ impl Dvr {
         }
         let ffmpeg = ffmpeg()?;
         let rec = crate::dvr_stream::GravacaoStream::iniciar(
-            canal, indice, duracao, ffmpeg, &pasta().join("Gravacoes")
+            canal, indice, duracao, ffmpeg, &pasta().join("Gravacoes"),
+            self.eventos_tx.clone()
         )?;
+        self.recente.insert(canal.nome.clone(), (FaseGravacao::Iniciando, Instant::now()));
         let pasta = rec.pasta.clone();
         self.ativos.push(rec);
         Ok(pasta)
@@ -218,12 +261,37 @@ impl Dvr {
     /// Roda a cada segundo, sem bloquear a interface.
     pub fn atualizar(&mut self, canais: &[catalogo::Canal]) -> Vec<String> {
         let mut avisos = std::mem::take(&mut self.avisos_iniciais);
+        while let Ok(evento) = self.eventos_rx.try_recv() {
+            self.processando.remove(&evento.canal);
+            let fase = if evento.sucesso {
+                FaseGravacao::Concluido
+            } else {
+                FaseGravacao::Erro
+            };
+            self.recente.insert(evento.canal.clone(), (fase, Instant::now()));
+            avisos.push(evento.mensagem);
+        }
         let mut i = 0;
         while i < self.ativos.len() {
             let (ativa, mensagens) = self.ativos[i].atualizar();
             avisos.extend(mensagens);
-            if ativa { i += 1; } else { self.ativos.remove(i); }
+            if ativa {
+                i += 1;
+            } else {
+                let concluida = self.ativos.remove(i);
+                if concluida.tem_dados() {
+                    self.processando.insert(concluida.canal.clone());
+                    self.recente.insert(
+                        concluida.canal, (FaseGravacao::Processando, Instant::now())
+                    );
+                } else {
+                    self.recente.insert(
+                        concluida.canal, (FaseGravacao::Erro, Instant::now())
+                    );
+                }
+            }
         }
+        self.recente.retain(|_, (_, t)| t.elapsed() < Duration::from_secs(30));
 
         let agora = epg::agora();
         let mut salvar = false;
