@@ -142,6 +142,8 @@ struct GravacaoNoPlayer {
     canal: String,
     arquivo: PathBuf,
     fim_em: Option<std::time::Instant>,
+    desde: std::time::Instant,
+    avisou_sem_dados: bool,
 }
 
 pub struct Dvr {
@@ -193,6 +195,8 @@ impl Dvr {
             canal: canal.into(),
             arquivo: arquivo.clone(),
             fim_em: duracao_s.map(|s| std::time::Instant::now() + std::time::Duration::from_secs(s)),
+            desde: std::time::Instant::now(),
+            avisou_sem_dados: false,
         });
         Ok(arquivo)
     }
@@ -202,6 +206,12 @@ impl Dvr {
         mpv.gravar_fluxo(None)?;
         let arquivo = ativo.arquivo.clone();
         self.no_player = None;
+        let bytes = fs::metadata(&arquivo).map(|m| m.len()).unwrap_or(0);
+        if bytes == 0 {
+            return Err(format!(
+                "O mpv encerrou a gravação, mas não produziu dados. Arquivo: {}", arquivo.display()
+            ));
+        }
         Ok(Some(arquivo))
     }
 
@@ -290,6 +300,18 @@ impl Dvr {
     /// Chamar pela interface regularmente, mesmo se o usuário não estiver no canal.
     pub fn atualizar(&mut self, canais: &[catalogo::Canal], mpv: Option<&mpv::Mpv>) -> Vec<String> {
         let mut avisos = Vec::new();
+        if let Some(ativo) = self.no_player.as_mut() {
+            if ativo.desde.elapsed().as_secs() >= 12 && !ativo.avisou_sem_dados {
+                let bytes = fs::metadata(&ativo.arquivo).map(|m| m.len()).unwrap_or(0);
+                if bytes == 0 {
+                    ativo.avisou_sem_dados = true;
+                    avisos.push(format!(
+                        "O player ainda não escreveu dados da gravação de {}. Esta fonte pode não ser compatível.",
+                        ativo.canal
+                    ));
+                }
+            }
+        }
         let vencida = self.no_player.as_ref()
             .and_then(|r| r.fim_em).is_some_and(|fim| std::time::Instant::now() >= fim);
         if vencida {
