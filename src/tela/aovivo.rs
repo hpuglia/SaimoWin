@@ -1274,24 +1274,157 @@ fn menu_de_velocidade(app: &mut App, ui: &mut egui::Ui) {
 }
 
  
-/// Janela simples de agendamento para todas as plataformas de desktop.
+/// Gravação manual: por padrão não há limite; o botão vermelho encerra.
+pub fn dialogo_gravacao_manual(app: &mut App, ctx: &egui::Context) {
+    if !app.gravacao_dialogo_aberto { return; }
+    let mut com_limite = app.gravacao_com_limite;
+    let mut minutos = app.gravacao_minutos.clone();
+    let mut iniciar = false;
+    let mut cancelar = false;
+    egui::Window::new("Gravar TV ao vivo")
+        .id(egui::Id::new("gravacao-manual-dvr"))
+        .anchor(Align2::CENTER_CENTER, egui::Vec2::ZERO)
+        .collapsible(false).resizable(false).default_width(420.0)
+        .show(ctx, |ui| {
+            ui.label("Gravação independente da reprodução na tela.");
+            ui.add_space(8.0);
+            ui.radio_value(&mut com_limite, false, "Gravar até clicar em Parar");
+            ui.radio_value(&mut com_limite, true, "Gravar por um tempo definido");
+            if com_limite {
+                ui.horizontal(|ui| {
+                    ui.label("Duração (minutos):");
+                    ui.add(egui::TextEdit::singleline(&mut minutos).desired_width(80.0));
+                });
+            }
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                if ui.button("Iniciar gravação").clicked() { iniciar = true; }
+                if ui.button("Cancelar").clicked() { cancelar = true; }
+            });
+        });
+    app.gravacao_com_limite = com_limite;
+    app.gravacao_minutos = minutos;
+    if cancelar { app.gravacao_dialogo_aberto = false; }
+    if iniciar { app.confirmar_gravacao_manual(); }
+}
+
+/// Calendário integrado à interface: visual e portátil (Windows/Linux/macOS).
+/// Não depende de digitar AAAA-MM-DD e dispensa bibliotecas de GUI do SO.
+fn escolher_data(
+    ui: &mut egui::Ui, inicio: &mut String, ano: &mut i32, mes: &mut u32,
+) {
+    use chrono::{Datelike, NaiveDate};
+    const MESES: [&str; 12] = [
+        "Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho",
+        "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro",
+    ];
+    const DIAS: [&str; 7] = ["Dom", "Seg", "Ter", "Qua", "Qui", "Sex", "Sáb"];
+    ui.horizontal(|ui| {
+        if ui.button("◀").on_hover_text("Mês anterior").clicked() {
+            if *mes == 1 { *mes = 12; *ano -= 1; } else { *mes -= 1; }
+        }
+        ui.label(egui::RichText::new(format!("{} de {}", MESES[(*mes - 1) as usize], ano)).strong());
+        if ui.button("▶").on_hover_text("Próximo mês").clicked() {
+            if *mes == 12 { *mes = 1; *ano += 1; } else { *mes += 1; }
+        }
+    });
+    let Some(primeiro) = NaiveDate::from_ymd_opt(*ano, *mes, 1) else { return };
+    let deslocamento = primeiro.weekday().num_days_from_sunday() as usize;
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 5.0;
+        for titulo in DIAS {
+            ui.add_sized([44.0, 20.0], egui::Label::new(titulo));
+        }
+    });
+    let atual = inicio.split_whitespace().next()
+        .and_then(|d| NaiveDate::parse_from_str(d, "%Y-%m-%d").ok());
+    for semana in 0..6 {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 5.0;
+            for dia_semana in 0..7 {
+                let indice = semana * 7 + dia_semana;
+                let dia = indice as i64 - deslocamento as i64 + 1;
+                let data = primeiro.checked_add_signed(chrono::Duration::days(dia - 1));
+                let data = data.filter(|d| d.month() == *mes);
+                if let Some(data) = data {
+                    let selecionado = atual == Some(data);
+                    if ui.add_sized([44.0, 28.0],
+                        egui::Button::new(data.day().to_string()).selected(selecionado)).clicked() {
+                        let hora = inicio.split_whitespace().nth(1).unwrap_or("19:00").to_string();
+                        *inicio = format!("{} {hora}", data.format("%Y-%m-%d"));
+                    }
+                } else {
+                    ui.add_sized([44.0, 28.0], egui::Label::new(" "));
+                }
+            }
+        });
+    }
+}
+
+/// Agendamento centralizado, com calendário e sugestões da grade EPG.
 pub fn dialogo_agendamento(app: &mut App, ctx: &egui::Context) {
     if !app.agendamento_aberto { return; }
     let mut inicio = app.agendamento_inicio.clone();
     let mut minutos = app.agendamento_minutos.clone();
+    let mut ano = app.agendamento_ano;
+    let mut mes = app.agendamento_mes;
     let mut salvar = false;
     let mut cancelar = false;
+    let canal = app.tocando.as_ref()
+        .and_then(|t| app.canais.get(t.canal))
+        .map(|c| c.nome.clone()).unwrap_or_default();
+
     egui::Window::new("Agendar gravação de TV")
         .id(egui::Id::new("agendamento-dvr"))
+        .anchor(Align2::CENTER_CENTER, egui::Vec2::ZERO)
         .collapsible(false)
         .resizable(false)
+        .default_width(470.0)
         .show(ctx, |ui| {
-            ui.label("A gravação não altera o canal em reprodução.");
-            ui.label("Data e hora local (AAAA-MM-DD HH:MM)");
-            ui.add(egui::TextEdit::singleline(&mut inicio).desired_width(260.0));
-            ui.label("Duração em minutos (1–480)");
-            ui.add(egui::TextEdit::singleline(&mut minutos).desired_width(120.0));
-            ui.label("O computador deve permanecer ligado com o Saimo aberto.");
+            ui.label(format!("Canal: {canal}"));
+            ui.label("Escolha uma data no calendário e informe o horário local.");
+            ui.separator();
+            escolher_data(ui, &mut inicio, &mut ano, &mut mes);
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                ui.label("Hora (HH:MM):");
+                let mut hora = inicio.split_whitespace().nth(1).unwrap_or("19:00").to_string();
+                if ui.add(egui::TextEdit::singleline(&mut hora).desired_width(80.0)).changed() {
+                    let data = inicio.split_whitespace().next().unwrap_or("").to_string();
+                    inicio = format!("{data} {hora}");
+                }
+                ui.label("Duração (min):");
+                ui.add(egui::TextEdit::singleline(&mut minutos).desired_width(80.0));
+            });
+
+            let programas: Vec<epg::Programa> = epg::grade(&canal).into_iter()
+                .filter(|p| p.fim > epg::agora())
+                .take(4).collect();
+            if !programas.is_empty() {
+                ui.separator();
+                ui.label(egui::RichText::new("Sugestões da programação").strong());
+                ui.label("Clique para preencher horário e duração automaticamente:");
+                for p in programas {
+                    let texto = format!("{} · {} ({})", p.horario(), p.titulo, p.categoria);
+                    if ui.button(texto).clicked() {
+                        let inicio_real = p.inicio.max(epg::agora() + 60);
+                        if let Some(dt) = chrono::DateTime::from_timestamp(inicio_real, 0)
+                            .map(|x| x.with_timezone(&chrono::Local)) {
+                            inicio = dt.format("%Y-%m-%d %H:%M").to_string();
+                            use chrono::Datelike;
+                            ano = dt.year();
+                            mes = dt.month();
+                            let restante = ((p.fim - inicio_real) + 59) / 60;
+                            minutos = restante.clamp(1, 480).to_string();
+                        }
+                    }
+                }
+            }
+
+            ui.separator();
+            ui.label(egui::RichText::new(
+                "O dispositivo precisa permanecer ligado e com o Saimo TV aberto."
+            ).small());
             ui.horizontal(|ui| {
                 if ui.button("Agendar").clicked() { salvar = true; }
                 if ui.button("Cancelar").clicked() { cancelar = true; }
@@ -1299,6 +1432,8 @@ pub fn dialogo_agendamento(app: &mut App, ctx: &egui::Context) {
         });
     app.agendamento_inicio = inicio;
     app.agendamento_minutos = minutos;
+    app.agendamento_ano = ano;
+    app.agendamento_mes = mes;
     if cancelar { app.agendamento_aberto = false; }
     if salvar { app.confirmar_agendamento(); }
 }
