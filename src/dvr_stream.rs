@@ -11,7 +11,7 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 const TEMPO_SEGMENTO: u32 = 30;
-const EXT_HLS: &str = "3gp,aac,ac3,eac3,flac,m4a,m4s,mp3,mp4,mpeg,mpegts,mkv,mov,ts,vtt,webvtt,cmfv,cmfa,woff";
+const EXT_HLS: &str = "3gp,aac,ac3,eac3,ec3,flac,fmp4,m3u8,m4a,m4s,mp3,mp4,mpeg,mpegts,mkv,mov,ts,txt,vtt,webvtt,cmfv,cmfa,woff";
 const MIN_BYTES: u64 = 1024;
 
 fn e_playlist_texto(url: &str) -> bool {
