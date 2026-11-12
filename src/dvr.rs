@@ -179,7 +179,7 @@ impl Dvr {
             .map_err(|e| format!("Não foi possível criar log da gravação: {e}"))?;
         let binario = ffmpeg()?;
         let mut comando = Command::new(binario);
-        comando.args(["-hide_banner", "-loglevel", "warning", "-stats", "-y"]);
+        comando.args(["-hide_banner", "-loglevel", "warning", "-nostats", "-y"]);
         // Uso de cabeçalhos compatíveis com o player, inclusive quando o
         // catálogo não publicou um agente personalizado.
         comando.args(["-user_agent", fonte.agente.as_deref().unwrap_or(crate::AGENTE)]);
@@ -295,6 +295,18 @@ impl Dvr {
         }
         if salvar { self.salvar_agenda(); }
         avisos
+    }
+}
+
+// Ao fechar o Saimo, sinaliza 'q' para o FFmpeg finalizar o arquivo MKV.
+// Não deixa uma gravação manual infinita invisível no sistema.
+impl Drop for Dvr {
+    fn drop(&mut self) {
+        for gravacao in &mut self.ativos {
+            if let Some(mut entrada) = gravacao.filho.stdin.take() {
+                let _ = entrada.write_all(b"q\n");
+            }
+        }
     }
 }
 
