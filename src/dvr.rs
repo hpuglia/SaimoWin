@@ -133,7 +133,9 @@ pub struct Agendamento {
 struct GravacaoAtiva {
     canal: String,
     arquivo: PathBuf,
+    log: PathBuf,
     filho: Child,
+    parada_solicitada: bool,
 }
 
 pub struct Dvr {
@@ -162,7 +164,7 @@ impl Dvr {
         self.ativos.iter().any(|a| a.canal == nome)
     }
 
-    pub fn iniciar(&mut self, canal: &catalogo::Canal, indice: usize, duracao_s: u64) -> Result<PathBuf, String> {
+    pub fn iniciar(&mut self, canal: &catalogo::Canal, indice: usize, duracao_s: Option<u64>) -> Result<PathBuf, String> {
         if self.ativos.len() >= 3 { return Err("Limite de 3 gravações simultâneas.".into()); }
         if self.ativo_no_canal(&canal.nome) { return Err("Este canal já está sendo gravado.".into()); }
         let fonte = canal.fontes.get(indice).ok_or("Fonte do canal não encontrada")?;
@@ -170,27 +172,46 @@ impl Dvr {
             return Err("Fonte protegida: gravação não disponível.".into());
         }
         let saida = arquivo_novo(&canal.nome, "mkv", "Gravacoes")?;
+        // O erro anterior era invisível: toda saída do FFmpeg ia para null.
+        // Cada gravação agora possui diagnóstico local, sem exibir URL/token na UI.
+        let log = saida.with_extension("ffmpeg.log");
+        let log_aberto = fs::File::create(&log)
+            .map_err(|e| format!("Não foi possível criar log da gravação: {e}"))?;
         let binario = ffmpeg()?;
         let mut comando = Command::new(binario);
-        comando.args(["-hide_banner", "-loglevel", "error", "-y"]);
-        if let Some(agente) = fonte.agente.as_deref() {
-            comando.args(["-user_agent", agente]);
-        }
+        comando.args(["-hide_banner", "-loglevel", "warning", "-stats", "-y"]);
+        // Uso de cabeçalhos compatíveis com o player, inclusive quando o
+        // catálogo não publicou um agente personalizado.
+        comando.args(["-user_agent", fonte.agente.as_deref().unwrap_or(crate::AGENTE)]);
         if let Some(referer) = fonte.referer.as_deref() {
             comando.args(["-referer", referer]);
         }
+        if fonte.url.starts_with("http://") || fonte.url.starts_with("https://") {
+            comando.args([
+                "-reconnect", "1",
+                "-reconnect_streamed", "1",
+                "-reconnect_on_network_error", "1",
+                "-reconnect_delay_max", "5",
+            ]);
+        }
         comando.arg("-i").arg(&fonte.url)
-            .args(["-map", "0:v:0?", "-map", "0:a:0?", "-c", "copy"])
-            .args(["-t", &duracao_s.max(1).to_string()])
-            .args(["-f", "matroska"])
+            .args(["-map", "0:v:0?", "-map", "0:a:0?", "-c", "copy"]);
+        // Sem limite: grava até clicar em Parar; agendamentos sempre passam duração.
+        if let Some(segundos) = duracao_s {
+            comando.args(["-t", &segundos.max(1).to_string()]);
+        }
+        comando.args(["-f", "matroska"])
             .arg(&saida)
-            .stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::null());
+            .stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::from(log_aberto));
         #[cfg(windows)] {
             use std::os::windows::process::CommandExt;
             comando.creation_flags(0x08000000); // CREATE_NO_WINDOW
         }
-        let filho = comando.spawn().map_err(|e| format!("Não foi possível iniciar o FFmpeg: {e}"))?;
-        self.ativos.push(GravacaoAtiva { canal: canal.nome.clone(), arquivo: saida.clone(), filho });
+        let filho = comando.spawn().map_err(|e| format!("Não foi possível iniciar FFmpeg: {e}. Log: {}", log.display()))?;
+        self.ativos.push(GravacaoAtiva {
+            canal: canal.nome.clone(), arquivo: saida.clone(), log,
+            filho, parada_solicitada: false,
+        });
         Ok(saida)
     }
 
@@ -198,8 +219,11 @@ impl Dvr {
         let ativo = self.ativos.iter_mut().find(|a| a.canal == canal)
             .ok_or("Nenhuma gravação em andamento neste canal")?;
         if let Some(mut stdin) = ativo.filho.stdin.take() {
+            // FFmpeg com -nostdin não lê 'q'; remover essa opção é essencial
+            // para um encerramento limpo com índice do contêiner MKV.
             stdin.write_all(b"q\n").map_err(|e| format!("Não foi possível parar: {e}"))?;
         }
+        ativo.parada_solicitada = true;
         Ok(())
     }
 
@@ -229,8 +253,16 @@ impl Dvr {
             match self.ativos[i].filho.try_wait() {
                 Ok(Some(status)) => {
                     let gravacao = self.ativos.remove(i);
-                    let resumo = if status.success() { "Concluída" } else { "Interrompida" };
-                    avisos.push(format!("{resumo}: {} ({})", gravacao.canal, gravacao.arquivo.display()));
+                    let tamanho = fs::metadata(&gravacao.arquivo).map(|m| m.len()).unwrap_or(0);
+                    if status.success() && tamanho > 0 {
+                        let encerramento = if gravacao.parada_solicitada { "Finalizada" } else { "Concluída" };
+                        avisos.push(format!("{encerramento}: {} ({})", gravacao.canal, gravacao.arquivo.display()));
+                    } else {
+                        avisos.push(format!(
+                            "Gravação falhou: {} (código: {:?}, arquivo: {} bytes). Log: {}",
+                            gravacao.canal, status.code(), tamanho, gravacao.log.display()
+                        ));
+                    }
                 }
                 Ok(None) => i += 1,
                 Err(e) => {
@@ -252,7 +284,7 @@ impl Dvr {
                 self.agendados[i].executado = true;
                 salvar = true;
                 if let Some(c) = canais.iter().find(|c| c.nome == a.canal) {
-                    match self.iniciar(c, a.fonte, (a.fim - agora) as u64) {
+                    match self.iniciar(c, a.fonte, Some((a.fim - agora) as u64)) {
                         Ok(p) => avisos.push(format!("Gravação agendada iniciada: {}", p.display())),
                         Err(e) => avisos.push(format!("Agendamento não iniciado: {e}")),
                     }
