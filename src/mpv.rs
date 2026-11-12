@@ -685,6 +685,26 @@ impl Mpv {
         self.avisos.try_iter()
     }
 
+    /// Grava o fluxo que já está tocando, usando o mesmo demuxer e as
+    /// configurações que permitem a reprodução (inclusive HLS em .txt).
+    /// A gravação acompanha este player: trocar de canal precisa encerrá-la.
+    pub fn gravar_fluxo(&self, arquivo: Option<&std::path::Path>) -> Result<(), String> {
+        let destino = arquivo.and_then(|p| p.to_str()).unwrap_or("");
+        if arquivo.is_some() && destino.is_empty() {
+            return Err("Caminho de gravação incompatível".into());
+        }
+        let nome = CString::new("stream-record").unwrap();
+        let valor = CString::new(destino).map_err(|_| "Caminho inválido".to_string())?;
+        let codigo = unsafe {
+            (self.simbolos.set_property_string)(self.handle.0, nome.as_ptr(), valor.as_ptr())
+        };
+        if codigo < 0 {
+            Err(format!("O mpv recusou a gravação do fluxo (código {codigo})"))
+        } else {
+            Ok(())
+        }
+    }
+
     /// Qualquer propriedade do mpv ("speed", "panscan"…).
     pub fn definir(&self, nome: &str, valor: &str) {
         self.propriedade(nome, valor);
