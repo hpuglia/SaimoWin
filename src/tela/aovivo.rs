@@ -820,6 +820,21 @@ fn comuns(app: &mut App, ui: &mut egui::Ui) {
         if botao_redondo(ui, Icone::Teclado, 46.0, "Atalhos do teclado (H)", false).clicked() {
             app.ajuda_aberta = true;
         }
+        if app.tocando.is_some() && app.tocando_vod.is_none() {
+            if botao_redondo(ui, Icone::Agendar, 42.0, "Agendar gravação: PC ligado e Saimo aberto", false).clicked() {
+                app.abrir_agendamento_ao_vivo();
+            }
+            let gravando = app.tocando.as_ref()
+                .and_then(|t| app.canais.get(t.canal))
+                .is_some_and(|c| app.dvr.ativo_no_canal(&c.nome));
+            let dica = if gravando { "Parar gravação" } else { "Gravar canal agora (até 4 horas)" };
+            if botao_redondo(ui, Icone::Gravar, 42.0, dica, gravando).clicked() {
+                app.alternar_gravacao_ao_vivo();
+            }
+            if botao_redondo(ui, Icone::Captura, 42.0, "Capturar quadro de vídeo (PNG)", false).clicked() {
+                app.capturar_ao_vivo();
+            }
+        }
         // Controle direto no player, sem abrir Ajustes. Os dois estados usam as
         // mesmas preferências persistentes de Ajustes > Reprodução.
         if app.tocando_vod.is_some() {
@@ -1237,4 +1252,34 @@ fn menu_de_velocidade(app: &mut App, ui: &mut egui::Ui) {
                 }
             }
         });
+}
+
+ 
+/// Janela simples de agendamento para todas as plataformas de desktop.
+pub fn dialogo_agendamento(app: &mut App, ctx: &egui::Context) {
+    if !app.agendamento_aberto { return; }
+    let mut inicio = app.agendamento_inicio.clone();
+    let mut minutos = app.agendamento_minutos.clone();
+    let mut salvar = false;
+    let mut cancelar = false;
+    egui::Window::new("Agendar gravação de TV")
+        .id(egui::Id::new("agendamento-dvr"))
+        .collapsible(false)
+        .resizable(false)
+        .show(ctx, |ui| {
+            ui.label("A gravação não altera o canal em reprodução.");
+            ui.label("Data e hora local (AAAA-MM-DD HH:MM)");
+            ui.add(egui::TextEdit::singleline(&mut inicio).desired_width(260.0));
+            ui.label("Duração em minutos (1–480)");
+            ui.add(egui::TextEdit::singleline(&mut minutos).desired_width(120.0));
+            ui.label("O computador deve permanecer ligado com o Saimo aberto.");
+            ui.horizontal(|ui| {
+                if ui.button("Agendar").clicked() { salvar = true; }
+                if ui.button("Cancelar").clicked() { cancelar = true; }
+            });
+        });
+    app.agendamento_inicio = inicio;
+    app.agendamento_minutos = minutos;
+    if cancelar { app.agendamento_aberto = false; }
+    if salvar { app.confirmar_agendamento(); }
 }
