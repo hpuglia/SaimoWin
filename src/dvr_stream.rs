@@ -154,7 +154,7 @@ fn finalizar_em_segundo_plano(pasta: PathBuf, ffmpeg: PathBuf, recuperar: bool) 
         let parcial = pasta.join("gravacao_final.tmp.mkv");
         let finalizado = pasta.join("gravacao_final.mkv");
         if finalizado.exists() { return; }
-        let ok = Command::new(ffmpeg)
+        let ok = Command::new(&ffmpeg)
             .current_dir(&pasta)
             .args(["-hide_banner", "-nostats", "-loglevel", "error", "-y",
                 "-f", "concat", "-safe", "0", "-i"])
