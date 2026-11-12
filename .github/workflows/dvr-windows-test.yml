@@ -1,7 +1,9 @@
 name: SaimoWin DVR Windows tests
 on:
   push:
-    branches: [ "feature/dvr-agendamento-discreto-v16", "feature/dvr-limpeza-status-v15", "feature/dvr-direto-segmentado", "fix/auto-hide-mouse-cursor" ]
+    branches: [ "feature/dvr-agendamento-discreto-v16", "feature/dvr-limpeza-status-v15", "feature/dvr-direto-segmentado", "fix/auto-hide-mouse-cursor", "feature/contribuicao-dvr-pr" ]
+  pull_request:
+    branches: [ "main" ]
   workflow_dispatch:
 concurrency:
   group: dvr-windows-${{ github.ref }}
