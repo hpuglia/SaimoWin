@@ -93,6 +93,7 @@ fn raiz_da_gravacao(pasta: &Path) -> Option<PathBuf> {
 /// Elimina apenas arquivos criados pelo Saimo DVR. Qualquer documento
 /// estranho deixado na pasta da sessão permanece intocado.
 fn limpar_temporarios(pasta: &Path) {
+    let mut pendente = false;
     if let Ok(itens) = fs::read_dir(pasta) {
         for item in itens.flatten() {
             let p = item.path();
@@ -100,17 +101,25 @@ fn limpar_temporarios(pasta: &Path) {
             let nome = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
             let nosso = (nome.starts_with("parte_") && nome.ends_with(".mkv"))
                 || (nome.starts_with("tentativa_") && nome.ends_with(".ffmpeg.log"))
-                || matches!(nome,
-                    "sessao.json" | "sessao.json.tmp" | "partes.ffconcat"
-                    | "gravacao_final.tmp.mkv"
-                );
-            if nosso { let _ = fs::remove_file(p); }
+                || matches!(nome, "partes.ffconcat" | "gravacao_final.tmp.mkv");
+            if nosso && fs::remove_file(p).is_err() { pendente = true; }
         }
+    } else {
+        pendente = true;
     }
-    let _ = fs::remove_dir(pasta);
-    if let Some(pai) = pasta.parent() {
-        if pai.file_name().is_some_and(|n| n == "_Processando") {
-            let _ = fs::remove_dir(pai);
+    // Só remover o manifesto quando todo o lixo conhecido foi excluído.
+    // Se o Windows bloquear algum arquivo, o manifesto permitirá nova
+    // tentativa na próxima inicialização.
+    if !pendente {
+        for nome in ["sessao.json.tmp", "sessao.json"] {
+            let p = pasta.join(nome);
+            if p.exists() { let _ = fs::remove_file(p); }
+        }
+        let _ = fs::remove_dir(pasta);
+        if let Some(pai) = pasta.parent() {
+            if pai.file_name().is_some_and(|n| n == "_Processando") {
+                let _ = fs::remove_dir(pai);
+            }
         }
     }
 }
@@ -147,6 +156,25 @@ fn publicar_validado(pasta: &Path, ffmpeg: &Path) -> Result<PathBuf, String> {
         }
     }
     let arquivo = pasta.join("gravacao_final.mkv");
+    // Se o programa caiu após mover o MKV, mas antes de atualizar o
+    // manifesto, não gerar um arquivo duplicado a partir dos trechos.
+    if !arquivo.exists() {
+        if let (Some(raiz), Some(nome)) = (
+            raiz_da_gravacao(pasta),
+            pasta.file_name().and_then(|n| n.to_str())
+        ) {
+            let ja_publicado = raiz.join(format!("{nome}.mkv"));
+            if ja_publicado.is_file()
+                && validar_fluxos(ffmpeg, &ja_publicado) == Some((true, true)) {
+                estado.estado = "publicada".into();
+                estado.arquivo_final = Some(ja_publicado.to_string_lossy().into_owned());
+                estado.erro = None;
+                salvar_estado(pasta, &estado);
+                limpar_temporarios(pasta);
+                return Ok(ja_publicado);
+            }
+        }
+    }
     if fs::metadata(&arquivo).map_or(true, |m| m.len() < MIN_BYTES) {
         return Err("Arquivo final ausente ou vazio; trechos preservados".into());
     }
