@@ -3682,10 +3682,10 @@ vec4 hook() {{
             }
         } else { None };
         match self.dvr.iniciar(&canal, fonte, duracao) {
-            Ok(pasta) => {
+            Ok(_pasta) => {
                 self.gravacao_dialogo_aberto = false;
                 self.aviso = Some((
-                    format!("DVR preparando {}. Confirmação após receber vídeo: {}", canal.nome, pasta.display()),
+                    format!("DVR preparando {}. O indicador ficará vermelho quando receber vídeo.", canal.nome),
                     Instant::now(),
                 ));
             }
