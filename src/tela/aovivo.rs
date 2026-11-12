@@ -813,6 +813,12 @@ fn barra_do_ao_vivo(app: &mut App, ui: &mut egui::Ui, area: Rect) {
                         resposta.rect.center(), resposta.rect.width() * 0.52,
                         Stroke::new(largura, suave)
                     );
+                    if fase == Fase::Gravando {
+                        p.text(
+                            resposta.rect.center_top() + egui::vec2(0.0, -10.0),
+                            Align2::CENTER_CENTER, "GRAVANDO", forte(9.0), suave
+                        );
+                    }
                 }
                 if botao_redondo(ui, Icone::Captura, 42.0, "Salvar captura de tela (PNG)", false).clicked() {
                     app.capturar_ao_vivo();
@@ -1445,8 +1451,7 @@ pub fn dialogo_agendamento(app: &mut App, ctx: &egui::Context) {
         .map(|c| c.nome.clone()).unwrap_or_default();
     let largura = (ctx.available_rect().width() - 30.0).clamp(260.0, 350.0);
     let altura = (ctx.available_rect().height() - 100.0).max(190.0);
-    let id_cal = egui::Id::new("dvr-calendario-expandido");
-    let mut calendario_aberto = ctx.data(|d| d.get_temp::<bool>(id_cal)).unwrap_or(false);
+    let mut calendario_aberto = app.agendamento_calendario_aberto;
     egui::Window::new("Agendar gravação")
         .id(egui::Id::new("agendamento-dvr"))
         .anchor(Align2::CENTER_CENTER, egui::Vec2::ZERO)
@@ -1499,8 +1504,13 @@ pub fn dialogo_agendamento(app: &mut App, ctx: &egui::Context) {
                         .filter(|p| p.fim > epg::agora()).take(8).collect();
                     if !programas.is_empty() {
                         ui.add_space(6.0);
+                        let programa_resumido = programa.as_deref().map(|titulo| {
+                            if titulo.chars().count() > 25 {
+                                format!("{}…", titulo.chars().take(24).collect::<String>())
+                            } else { titulo.to_string() }
+                        }).unwrap_or_else(|| "Escolher do guia".into());
                         egui::ComboBox::from_label("Programação")
-                            .selected_text(programa.as_deref().unwrap_or("Escolher do guia"))
+                            .selected_text(programa_resumido)
                             .width((largura - 140.0).max(145.0))
                             .show_ui(ui, |ui| {
                                 for p in &programas {
@@ -1535,7 +1545,7 @@ pub fn dialogo_agendamento(app: &mut App, ctx: &egui::Context) {
                     });
                 });
         });
-    ctx.data_mut(|d| d.insert_temp(id_cal, calendario_aberto));
+    app.agendamento_calendario_aberto = calendario_aberto;
     app.agendamento_inicio = inicio;
     app.agendamento_minutos = minutos;
     app.agendamento_ano = ano;
