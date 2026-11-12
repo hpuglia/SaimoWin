@@ -3701,7 +3701,7 @@ vec4 hook() {{
             Ok(p) => {
                 self.gravacao_dialogo_aberto = false;
                 self.aviso = Some((format!(
-                    "Gravação solicitada ao player: {}. Mantenha o canal aberto.", p.display()
+                    "DVR: verificando gravação em {}. Aguarde a confirmação dos dados; mantenha o canal aberto.", p.display()
                 ), Instant::now()));
             }
             Err(e) => self.aviso = Some((format!("Não foi possível gravar: {e}"), Instant::now())),
