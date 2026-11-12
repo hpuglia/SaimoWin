@@ -360,6 +360,7 @@ struct App {
     pub pasta_gravacoes_texto: String,
     pub agendamento_aberto: bool,
     pub agendamentos_lista_aberta: bool,
+    pub agendamento_calendario_aberto: bool,
     pub agendamento_programa: Option<String>,
     pub agendamento_inicio: String,
     pub agendamento_minutos: String,
@@ -708,6 +709,7 @@ impl App {
             pasta_gravacoes_texto: dvr::pasta().display().to_string(),
             agendamento_aberto: false,
             agendamentos_lista_aberta: false,
+            agendamento_calendario_aberto: false,
             agendamento_programa: None,
             agendamento_inicio: (chrono::Local::now() + chrono::Duration::minutes(5)).format("%Y-%m-%d %H:%M").to_string(),
             agendamento_minutos: "60".into(),
@@ -3711,6 +3713,7 @@ vec4 hook() {{
 
     pub fn abrir_agendamento_ao_vivo(&mut self) {
         self.agendamentos_lista_aberta = false;
+        self.agendamento_calendario_aberto = false;
         self.agendamento_programa = None;
         let Some(t) = self.tocando.as_ref() else { return; };
         let Some(canal) = self.canais.get(t.canal) else { return; };
