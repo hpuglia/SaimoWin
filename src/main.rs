@@ -682,9 +682,9 @@ impl App {
             mudo: false,
             pausado: false,
             sugerir_pulos: std::fs::read_to_string(catalogo::pasta().join("sugerir-pulos.txt"))
-                .ok().is_some_and(|v| v.trim() == "1"),
+                .ok().map(|v| v.trim() == "1").unwrap_or(true),
             proximo_automatico: std::fs::read_to_string(catalogo::pasta().join("proximo-automatico.txt"))
-                .ok().is_some_and(|v| v.trim() == "1"),
+                .ok().map(|v| v.trim() == "1").unwrap_or(true),
             logos: HashMap::new(),
             pedidos_de_logo: Vec::new(),
             ordem_das_capas: std::collections::VecDeque::new(),
@@ -3613,6 +3613,14 @@ vec4 hook() {{
             desde: Instant::now(),
             confirmado: false,
         });
+    }
+
+    /// Alterna e persiste a rádio favorita. O teclado S e o mouse usam a
+    /// mesma função, sem confundir com favoritos de filmes ou de canais.
+    pub fn favoritar_radio(&mut self, nome: &str) {
+        radios::alternar_favorita(nome);
+        self.versao_dados = self.versao_dados.wrapping_add(1);
+        self.mandar_dados();
     }
 
     pub fn parar_radio(&mut self) {
