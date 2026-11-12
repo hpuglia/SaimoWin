@@ -1,0 +1,13 @@
+name: Test DVR Windows
+on:
+  push:
+    branches: [ "fix/auto-hide-mouse-cursor" ]
+  workflow_dispatch:
+jobs:
+  rust-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Unit tests and compilation
+        run: cargo test --release --locked
