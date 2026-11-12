@@ -284,7 +284,15 @@ fn finalizar_em_segundo_plano(
         let canal = estado.canal.clone();
         let resultado: Result<PathBuf, String> = (|| {
             // Limpa também as gravações bem-sucedidas feitas pela V14.
-            if pasta.join("gravacao_final.mkv").is_file() || estado.arquivo_final.is_some() {
+            // Se caiu após mover o MKV, reconhecer o arquivo publicado
+            // antes de reconstruir e duplicá-lo.
+            let publicado_antes_do_manifesto = estado.estado == "finalizada"
+                && raiz_da_gravacao(&pasta)
+                    .and_then(|raiz| pasta.file_name().map(|nome|
+                        raiz.join(format!("{}.mkv", nome.to_string_lossy()))))
+                    .is_some_and(|saida| saida.is_file());
+            if pasta.join("gravacao_final.mkv").is_file()
+                || estado.arquivo_final.is_some() || publicado_antes_do_manifesto {
                 return publicar_validado(&pasta, &ffmpeg);
             }
             if partes.is_empty() {
