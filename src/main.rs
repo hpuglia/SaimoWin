@@ -24,6 +24,8 @@ mod progresso;
 mod pulos;
 mod radios;
 mod dvr;
+#[allow(dead_code)]
+mod dvr_politica;
 mod gravacao_obs;
 mod legendas;
 mod midia;
