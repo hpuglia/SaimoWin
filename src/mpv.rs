@@ -636,6 +636,21 @@ impl Mpv {
         Some((posicao, duracao))
     }
 
+    /// Salva somente o vídeo (com legendas), sem botões ou interface do Saimo.
+    /// A libmpv finaliza a escrita de forma assíncrona.
+    pub fn capturar_para(&self, destino: &std::path::Path) -> Result<(), String> {
+        let caminho = destino.to_str().ok_or("Caminho da captura não é UTF-8")?;
+        let args = [
+            CString::new("screenshot-to-file").unwrap(),
+            CString::new(caminho).map_err(|_| "Nome da captura inválido")?,
+            CString::new("subtitles").unwrap(),
+        ];
+        let ponteiros = [args[0].as_ptr(), args[1].as_ptr(), args[2].as_ptr(), std::ptr::null()];
+        let codigo = unsafe { (self.simbolos.command)(self.handle.0, ponteiros.as_ptr()) };
+        if codigo < 0 { Err(format!("O mpv recusou a captura ({codigo})")) }
+        else { Ok(()) }
+    }
+
     pub fn parar(&self) {
         self.comando(&["stop"]);
     }
