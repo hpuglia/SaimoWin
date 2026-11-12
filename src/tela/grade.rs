@@ -404,8 +404,17 @@ pub fn ajustes(app: &mut App, ui: &mut egui::Ui) {
             ui.add_space(18.0);
             rotulo_de_secao(ui, "Legendas");
             ui.add_space(4.0);
+            if linha(ui, "Legendas automáticas", if app.legendas_automaticas {
+                "Ligadas: selecionar legenda disponível ao abrir o vídeo"
+            } else {
+                "Desligadas: padrão; escolha uma faixa manualmente no player"
+            }, Icone::Legendas).clicked() {
+                acao = Some(15);
+            }
             let idioma = legendas::idioma_guardado();
-            if linha(ui, "Idioma preferido", nome_do_idioma(&idioma), Icone::Legendas).on_hover_text("Liga sozinha a primeira legenda deste idioma").clicked() {
+            if linha(ui, "Idioma preferido", nome_do_idioma(&idioma), Icone::Legendas)
+                .on_hover_text("Idioma usado somente se Legendas automáticas estiver ligado")
+                .clicked() {
                 acao = Some(3);
             }
             ui.add_space(18.0);
@@ -461,6 +470,7 @@ pub fn ajustes(app: &mut App, ui: &mut egui::Ui) {
         Some(11) => app.alternar_zero_delay(),
         Some(13) => app.alternar_sugestoes_de_pulo(),
         Some(14) => app.alternar_proximo_automatico(),
+        Some(15) => app.alternar_legendas_automaticas(),
         Some(1) => {
             let ordem = [1.0, 1.25, 1.5, 2.0, 0.75];
             let atual = ordem.iter().position(|v| *v == app.velocidade).unwrap_or(0);
