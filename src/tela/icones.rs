@@ -59,6 +59,7 @@ pub enum Icone {
     Link,
     Captura,
     Gravar,
+    Pasta,
     Agendar,
     /// Clapperboard com avanço duplo: controla apenas as sugestões de abertura.
     PularAbertura,
@@ -83,6 +84,7 @@ fn caminhos(icone: Icone) -> &'static [&'static str] {
         ],
         Icone::Captura => &["M12,7a5,5 0 1,0 0,10a5,5 0 0,0 0,-10zM12,15a3,3 0 1,1 0,-6a3,3 0 0,1 0,6zM9,3l-2,2H4C2.9,5 2,5.9 2,7v12c0,1.1 0.9,2 2,2h16c1.1,0 2,-0.9 2,-2V7c0,-1.1 -0.9,-2 -2,-2h-3l-2,-2H9z"],
         Icone::Gravar => &["M12,2A10,10 0 1,0 12,22A10,10 0 0,0 12,2zM12,6a6,6 0 1,1 0,12a6,6 0 0,1 0,-12z"],
+        Icone::Pasta => &["M10,4l2,2h8c1.1,0 2,0.9 2,2v11c0,1.1 -0.9,2 -2,2H4c-1.1,0 -2,-0.9 -2,-2V6c0,-1.1 0.9,-2 2,-2h6z"],
         Icone::Agendar => &["M19,4h-1V2h-2v2H8V2H6v2H5C3.9,4 3,4.9 3,6v15c0,1.1 0.9,2 2,2h14c1.1,0 2,-0.9 2,-2V6c0,-1.1 -0.9,-2 -2,-2zM19,21H5V10h14v11zM12,12a4,4 0 1,0 0,8a4,4 0 0,0 0,-8z"],
         Icone::Link => &["M3.9,12c0,-1.71 1.39,-3.1 3.1,-3.1h4V7H7c-2.76,0 -5,2.24 -5,5s2.24,5 5,5h4v-1.9H7c-1.71,0 -3.1,-1.39 -3.1,-3.1zM8,13h8v-2H8v2zM17,7h-4v1.9h4c1.71,0 3.1,1.39 3.1,3.1s-1.39,3.1 -3.1,3.1h-4V17h4c2.76,0 5,-2.24 5,-5s-2.24,-5 -5,-5z"],
         Icone::Inicio => &["M10,20v-6h4v6h5v-8h3L12,3 2,12h3v8z"],

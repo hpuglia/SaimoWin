@@ -107,7 +107,7 @@ fn main() -> eframe::Result<()> {
         padrao(info);
     }));
     let mut janela = egui::ViewportBuilder::default()
-        .with_title("Saimo TV [TESTE hpuglia]")
+        .with_title("Saimo TV")
         .with_inner_size([1280.0, 720.0])
         .with_min_inner_size([800.0, 480.0]);
     // No Linux o painel e o Wayland ligam a janela ao saimo-tv.desktop por este
@@ -130,7 +130,7 @@ fn main() -> eframe::Result<()> {
         ..Default::default()
     };
     diagnostico::etapa("criando a janela e o contexto OpenGL");
-    let resultado = eframe::run_native("Saimo TV [TESTE hpuglia]", opcoes, Box::new(|cc| Ok(Box::new(App::novo(cc)))));
+    let resultado = eframe::run_native("Saimo TV", opcoes, Box::new(|cc| Ok(Box::new(App::novo(cc)))));
     if let Err(e) = &resultado {
         diagnostico::erro_fatal(&e.to_string());
     }
@@ -369,6 +369,8 @@ struct App {
     pub gravacao_dialogo_aberto: bool,
     pub gravacao_com_limite: bool,
     pub gravacao_minutos: String,
+    pub ultima_gravacao_manual: Option<std::path::PathBuf>,
+    pub gravacao_concluida_dialogo_aberto: bool,
     ultima_verificacao_dvr: Instant,
     logos: HashMap<String, Option<egui::TextureHandle>>,
     /// Chave no mapa, endereço e o lado máximo em pixels.
@@ -718,6 +720,8 @@ impl App {
             gravacao_dialogo_aberto: false,
             gravacao_com_limite: false,
             gravacao_minutos: "60".into(),
+            ultima_gravacao_manual: None,
+            gravacao_concluida_dialogo_aberto: false,
             ultima_verificacao_dvr: Instant::now(),
             logos: HashMap::new(),
             pedidos_de_logo: Vec::new(),
@@ -3651,6 +3655,13 @@ vec4 hook() {{
         self.aviso = Some((texto, Instant::now()));
     }
 
+    /// Abre a pasta de vídeos e destaca o último arquivo manual, quando disponível.
+    pub fn abrir_pasta_gravacoes(&mut self) {
+        if let Err(e) = dvr::abrir_destino(self.ultima_gravacao_manual.as_deref()) {
+            self.aviso = Some((e, Instant::now()));
+        }
+    }
+
     /// Grava o fluxo original do canal em segmentos, independente do player.
     pub fn alternar_gravacao_ao_vivo(&mut self) {
         let Some(indice) = self.tocando.as_ref().map(|t| t.canal) else { return };
@@ -3687,7 +3698,7 @@ vec4 hook() {{
                 }
             }
         } else { None };
-        match self.dvr.iniciar(&canal, fonte, duracao) {
+        match self.dvr.iniciar_manual(&canal, fonte, duracao) {
             Ok(_pasta) => {
                 self.gravacao_dialogo_aberto = false;
                 self.aviso = Some((
@@ -4299,6 +4310,10 @@ impl eframe::App for App {
             self.ultima_verificacao_dvr = Instant::now();
             for recado in self.dvr.atualizar(&self.canais) {
                 self.aviso = Some((recado, Instant::now()));
+            }
+            if let Some(arquivo) = self.dvr.retirar_finalizacao_manual() {
+                self.ultima_gravacao_manual = Some(arquivo);
+                self.gravacao_concluida_dialogo_aberto = true;
             }
         }
         if self.dvr.ha_agenda() || self.dvr.gravando() {
