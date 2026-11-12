@@ -106,8 +106,36 @@ fn caminho_local_ffconcat(p: &Path) -> String {
     p.file_name().and_then(|s| s.to_str()).unwrap_or("").to_string()
 }
 
-fn finalizar_em_segundo_plano(pasta: PathBuf, ffmpeg: PathBuf) {
+fn validar_fluxos(ffmpeg: &Path, arquivo: &Path) -> Option<(bool, bool)> {
+    let probe = if ffmpeg.is_absolute() {
+        ffmpeg.with_file_name(if cfg!(windows) { "ffprobe.exe" } else { "ffprobe" })
+    } else {
+        PathBuf::from(if cfg!(windows) { "ffprobe.exe" } else { "ffprobe" })
+    };
+    let resposta = Command::new(probe)
+        .args(["-v", "error", "-show_entries", "stream=codec_type",
+            "-of", "csv=p=0"])
+        .arg(arquivo).stdout(Stdio::piped()).stderr(Stdio::null())
+        .output().ok()?;
+    if !resposta.status.success() { return None; }
+    let saida = String::from_utf8_lossy(&resposta.stdout);
+    Some((
+        saida.lines().any(|s| s.trim() == "video"),
+        saida.lines().any(|s| s.trim() == "audio"),
+    ))
+}
+
+fn finalizar_em_segundo_plano(pasta: PathBuf, ffmpeg: PathBuf, recuperar: bool) {
     std::thread::spawn(move || {
+        if recuperar {
+            // Se o Saimo caiu mas o filho FFmpeg ainda está finalizando, esperar
+            // os arquivos estabilizarem; nunca unir arquivos em escrita.
+            for _ in 0..5 {
+                let antes = bytes_da_sessao(&pasta);
+                std::thread::sleep(Duration::from_secs(15));
+                if bytes_da_sessao(&pasta) == antes { break; }
+            }
+        }
         let partes = partes_da_sessao(&pasta);
         if partes.is_empty() { return; }
         let mut estado = ler_estado(&pasta).unwrap_or_else(|| Estado {
@@ -141,7 +169,21 @@ fn finalizar_em_segundo_plano(pasta: PathBuf, ffmpeg: PathBuf) {
             let (bytes, qtd) = bytes_da_sessao(&pasta);
             estado.bytes = bytes;
             estado.partes = qtd;
-            estado.estado = "finalizada".into();
+            match validar_fluxos(&ffmpeg, &finalizado) {
+                Some((true, true)) => estado.estado = "finalizada".into(),
+                Some((true, false)) => {
+                    estado.estado = "finalizada_sem_audio".into();
+                    estado.erro = Some("O arquivo possui vídeo, mas nenhuma faixa de áudio identificada".into());
+                }
+                Some((false, _)) => {
+                    estado.estado = "verificar_arquivo".into();
+                    estado.erro = Some("Não foi identificada uma faixa de vídeo na gravação final".into());
+                }
+                None => {
+                    estado.estado = "finalizada_nao_verificada".into();
+                    estado.erro = Some("Instale ffprobe junto do ffmpeg para validar vídeo e áudio".into());
+                }
+            }
             salvar_estado(&pasta, &estado);
         } else {
             let _ = fs::remove_file(parcial);
@@ -168,7 +210,7 @@ pub fn recuperar_sessoes(raiz: &Path, ffmpeg: &Path) -> usize {
             estado.partes = n;
             salvar_estado(&pasta, &estado);
             if n > 0 {
-                finalizar_em_segundo_plano(pasta, ffmpeg.to_path_buf());
+                finalizar_em_segundo_plano(pasta, ffmpeg.to_path_buf(), true);
                 recuperadas += 1;
             }
         }
@@ -348,7 +390,7 @@ impl GravacaoStream {
                         self.canal, self.log.display()
                     ));
                 } else {
-                    finalizar_em_segundo_plano(self.pasta.clone(), self.ffmpeg.clone());
+                    finalizar_em_segundo_plano(self.pasta.clone(), self.ffmpeg.clone(), false);
                     avisos.push(format!(
                         "DVR: {} — {} trecho(s) salvos; preparando arquivo final em segundo plano.",
                         self.canal, n
