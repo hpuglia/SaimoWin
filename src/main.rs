@@ -23,6 +23,7 @@ mod mpv;
 mod progresso;
 mod pulos;
 mod radios;
+mod dvr;
 mod legendas;
 mod midia;
 mod bateria;
@@ -354,6 +355,12 @@ struct App {
     pub sugerir_pulos: bool,
     /// Avancar somente quando a fonte realmente encerrar; desligado por padrao.
     pub proximo_automatico: bool,
+    pub dvr: dvr::Dvr,
+    pub pasta_gravacoes_texto: String,
+    pub agendamento_aberto: bool,
+    pub agendamento_inicio: String,
+    pub agendamento_minutos: String,
+    ultima_verificacao_dvr: Instant,
     logos: HashMap<String, Option<egui::TextureHandle>>,
     /// Chave no mapa, endereço e o lado máximo em pixels.
     pedidos_de_logo: Vec<(String, String, u32)>,
@@ -685,6 +692,12 @@ impl App {
                 .ok().map(|v| v.trim() == "1").unwrap_or(true),
             proximo_automatico: std::fs::read_to_string(catalogo::pasta().join("proximo-automatico.txt"))
                 .ok().map(|v| v.trim() == "1").unwrap_or(true),
+            dvr: dvr::Dvr::novo(),
+            pasta_gravacoes_texto: dvr::pasta().display().to_string(),
+            agendamento_aberto: false,
+            agendamento_inicio: (chrono::Local::now() + chrono::Duration::minutes(5)).format("%Y-%m-%d %H:%M").to_string(),
+            agendamento_minutos: "60".into(),
+            ultima_verificacao_dvr: Instant::now(),
             logos: HashMap::new(),
             pedidos_de_logo: Vec::new(),
             ordem_das_capas: std::collections::VecDeque::new(),
@@ -3572,6 +3585,65 @@ vec4 hook() {{
         }
     }
 
+    // MARK: - DVR de TV ao vivo
+
+    /// A captura usa o quadro de vídeo do mpv; não fotografa botões ou menus.
+    pub fn capturar_ao_vivo(&mut self) {
+        let Some(nome) = self.tocando.as_ref().and_then(|t| self.canais.get(t.canal))
+            .map(|c| c.nome.clone()) else { return; };
+        let resultado = self.mpv.as_ref().ok_or("Player não disponível".to_string())
+            .and_then(|m| dvr::captura(m, &nome));
+        let texto = match resultado {
+            Ok(p) => format!("Captura solicitada: {}", p.display()),
+            Err(e) => format!("Captura não realizada: {e}"),
+        };
+        self.aviso = Some((texto, Instant::now()));
+    }
+
+    /// Gravar em processo separado, sem mudar o canal que está na tela.
+    /// Por segurança, a sessão manual termina em até 4 horas.
+    pub fn alternar_gravacao_ao_vivo(&mut self) {
+        let Some((indice, fonte)) = self.tocando.as_ref().map(|t| (t.canal, t.fonte)) else { return; };
+        let Some(canal) = self.canais.get(indice).cloned() else { return; };
+        let resultado = if self.dvr.ativo_no_canal(&canal.nome) {
+            self.dvr.parar(&canal.nome).map(|_| "Finalizando gravação…".to_string())
+        } else {
+            self.dvr.iniciar(&canal, fonte, 4 * 3600)
+                .map(|p| format!("Gravando {}: {}", canal.nome, p.display()))
+        };
+        self.aviso = Some((resultado.unwrap_or_else(|e| format!("Não foi possível gravar: {e}")), Instant::now()));
+    }
+
+    pub fn abrir_agendamento_ao_vivo(&mut self) {
+        let Some(t) = self.tocando.as_ref() else { return; };
+        let Some(canal) = self.canais.get(t.canal) else { return; };
+        // Se houver programação, sugerir o horário do próximo programa.
+        let inicio = epg::agora_e_depois(&canal.nome).and_then(|(_, proximo)| proximo)
+            .map(|p| p.inicio)
+            .and_then(|ts| chrono::DateTime::from_timestamp(ts, 0))
+            .map(|utc| utc.with_timezone(&chrono::Local))
+            .unwrap_or_else(|| chrono::Local::now() + chrono::Duration::minutes(5));
+        self.agendamento_inicio = inicio.format("%Y-%m-%d %H:%M").to_string();
+        self.agendamento_minutos = "60".into();
+        self.agendamento_aberto = true;
+        self.mostrar_controles();
+    }
+
+    pub fn confirmar_agendamento(&mut self) {
+        let Some((indice, fonte)) = self.tocando.as_ref().map(|t| (t.canal, t.fonte)) else { return; };
+        let Some(canal) = self.canais.get(indice) else { return; };
+        let minutos = self.agendamento_minutos.trim().parse::<u32>();
+        let resultado = minutos.map_err(|_| "Informe a duração em minutos".to_string())
+            .and_then(|min| self.dvr.agendar(&canal.nome, fonte, &self.agendamento_inicio, min));
+        match resultado {
+            Ok(()) => {
+                self.agendamento_aberto = false;
+                self.aviso = Some(("Gravação agendada. Mantenha o PC ligado e o Saimo aberto.".into(), Instant::now()));
+            }
+            Err(e) => self.aviso = Some((format!("Não foi possível agendar: {e}"), Instant::now())),
+        }
+    }
+
     // MARK: - Rádios
 
     /// A lista do repositório por trás; a guardada já está na tela.
@@ -4112,6 +4184,15 @@ impl eframe::App for App {
         }
         self.cuidar_dos_recados(ctx);
         self.cuidar_dos_eventos(ctx);
+        if self.ultima_verificacao_dvr.elapsed() >= Duration::from_secs(1) {
+            self.ultima_verificacao_dvr = Instant::now();
+            for recado in self.dvr.atualizar(&self.canais) {
+                self.aviso = Some((recado, Instant::now()));
+            }
+        }
+        if self.dvr.ha_agenda() || self.dvr.gravando() {
+            ctx.request_repaint_after(Duration::from_secs(1));
+        }
         self.cuidar_do_mpv(ctx);
         self.cuidar_do_connect(ctx);
         self.cuidar_da_midia();
