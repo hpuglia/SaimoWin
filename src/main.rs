@@ -3645,7 +3645,12 @@ vec4 hook() {{
     /// Iniciar apenas depois de escolher o limite. Nenhum temporizador
     /// implícito para gravações manuais: o usuário controla o encerramento.
     pub fn confirmar_gravacao_manual(&mut self) {
-        let Some((indice, fonte)) = self.tocando.as_ref().map(|t| (t.canal, t.fonte)) else { return };
+        let Some((indice, fonte, confirmado)) = self.tocando.as_ref()
+            .map(|t| (t.canal, t.fonte, t.confirmado)) else { return };
+        if !confirmado {
+            self.aviso = Some(("Aguarde o vídeo começar antes de iniciar a gravação".into(), Instant::now()));
+            return;
+        }
         let Some(canal) = self.canais.get(indice).cloned() else { return };
         // Não gravar fontes identificadas como protegidas no catálogo.
         if canal.fontes.get(fonte).is_some_and(|f| f.chave.is_some()) {
@@ -3700,7 +3705,15 @@ vec4 hook() {{
         match resultado {
             Ok(()) => {
                 self.agendamento_aberto = false;
-                self.aviso = Some(("Gravação agendada. Mantenha o PC ligado e o Saimo aberto.".into(), Instant::now()));
+                let fonte_url = canal.fontes.get(fonte).map(|f| f.url.as_str()).unwrap_or("");
+                let nao_padrao = fonte_url.split('?').next().unwrap_or(fonte_url)
+                    .to_ascii_lowercase().ends_with(".txt");
+                let msg = if nao_padrao {
+                    "Agendamento salvo. Atenção: esta fonte usa HLS não padrão e pode não gravar pelo FFmpeg independente."
+                } else {
+                    "Gravação agendada. Mantenha o PC ligado e o Saimo aberto."
+                };
+                self.aviso = Some((msg.into(), Instant::now()));
             }
             Err(e) => self.aviso = Some((format!("Não foi possível agendar: {e}"), Instant::now())),
         }
