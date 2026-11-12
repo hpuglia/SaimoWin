@@ -1,89 +1,71 @@
-# DVR direto segmentado — SaimoWin (Windows / Linux / macOS)
+# DVR direto segmentado — SaimoWin V15
 
-O gravador foi reorganizado para **copiar a transmissão de áudio e vídeo**
-com FFmpeg. Ele **não utiliza OBS nem captura da tela**. Não é necessário
-instalar codecs ou drivers de captura: o distribuído ao usuário é um binário
-FFmpeg portátil compatível com o sistema operacional.
+O SaimoWin grava a transmissão original com FFmpeg `-c copy`, sem OBS,
+captura de tela ou recompressão.
 
-## Fluxo de gravação
+## Pasta organizada automaticamente
 
-1. O usuário escolhe Gravar (até Parar ou por duração) ou Agenda.
-2. O Saimo usa a fonte selecionada do canal, com user-agent/referer quando
-   publicados na lista. Não tenta contornar criptografia ou DRM.
-3. O FFmpeg abre a transmissão e usa `-c copy`, sem reencodificação.
-4. A sessão grava `parte_00000.mkv`, `parte_00001.mkv`, ... em um diretório
-   exclusivo, com trechos aproximados de 30 s **dependentes de keyframes**.
-5. A interface só confirma gravação após verificar bytes efetivamente
-   escritos; caso falhe, exibe o caminho do log local.
-6. Ao encerrar, tenta unir os trechos em `gravacao_final.mkv` por cópia de
-   pacotes. Os arquivos `parte_*.mkv` são mantidos para recuperação.
-7. O `ffprobe` verifica as faixas do arquivo final quando está disponível.
-
-Uma sessão contém:
+A pasta visível contém apenas vídeos finalizados e verificados:
 
 ```
 Gravacoes/
-  Nome-do-canal_2026-11-12_12-30-00/
-    sessao.json
-    tentativa_1.ffmpeg.log
-    tentativa_2.ffmpeg.log (somente se necessário)
-    parte_00000.mkv
-    parte_00001.mkv
-    partes.ffconcat
-    gravacao_final.mkv (após união bem-sucedida)
+  SBT SP_2026-11-12_02-54-38.mkv
+  _Processando/                     (apenas enquanto necessário)
+    Outro Canal_2026-11-12_03-00-00/
+      parte_00000.mkv
+      parte_00001.mkv
+      partes.ffconcat
+      sessao.json
+      tentativa_1.ffmpeg.log
 ```
 
-## Particularidades de fontes HLS
+Uma sessão grava primeiro trechos MKV independentes de aproximadamente 30
+segundos, conforme os keyframes da fonte. Depois de interromper ou atingir o
+prazo, o Saimo reúne os trechos, verifica a presença de vídeo **e áudio** com
+ffprobe e publica um MKV com nome exclusivo na pasta `Gravacoes`.
 
-O mpv original já força `demuxer-lavf-format=hls` para URL terminada em
-`.txt`; o DVR agora usa equivalente `-f hls` nesse caso. Na segunda
-tentativa, se a primeira falhou antes de gravar qualquer byte, inclui uma
-lista explícita de extensões conhecidas com a extensão atípica `.woff`
-para listas HLS. Não utiliza `ALL` e não desabilita globalmente a
-verificação de formatos.
+**Somente após validação e publicação**, os arquivos temporários conhecidos
+são apagados. Arquivos estranhos, como notas colocadas pelo usuário, não são
+apagados pelo limpador. Se faltar ffprobe, houver falha na união, vídeo
+inválido ou ausência de áudio, o programa **preserva os arquivos e logs** em
+`_Processando` para recuperação e registra o erro. Nenhum arquivo final
+existente é sobrescrito.
 
-Esse mecanismo não garante que URL assinada/expirada possa ser gravada:
-a aplicação ainda precisa receber a transmissão legitimamente. Se o
-servidor responder `error.txt`, o DVR registrará falha real, sem inventar
-arquivo reproduzível.
+Ao abrir a V15, gravações bem-sucedidas deixadas na estrutura da V14 são
+validadas, movidas para a pasta principal e limpas da mesma maneira.
 
-## Segurança e recuperação
+## Estados no player
 
-- Arquivos de sessões não são sobrescritos nem apagados ao juntar.
-- O manifesto `sessao.json` é gravado em arquivo temporário e renomeado.
-- O processo tenta parar de forma limpa via `q`; se não responder, preserva
-  os trechos anteriores e encerra o processo.
-- No próximo início do aplicativo, identifica sessões interrompidas e
-  tenta remontá-las **após estabilização** do tamanho dos arquivos.
-- Falta de energia, falha de disco ou encerramento durante escrita de
-  um segmento podem causar perda do segmento incompleto; não há garantia
-  matemática de preservação dos últimos quadros.
-- Logs locais do FFmpeg podem conter URLs e tokens. Não publique esses logs
-  sem remover dados de acesso.
+O botão circular de gravação fica acima do selo "AO VIVO" e mostra:
+- PARADO — anel cinza, sem processo ativo naquele canal;
+- PREPARANDO — anel amarelo, FFmpeg ainda não confirmou dados;
+- GRAVANDO — anel vermelho pulsante após detectar dados reais;
+- PROCESSANDO — anel azul durante encerramento e união;
+- SALVO — anel verde após publicação validada;
+- ERRO — anel vermelho-claro e aviso curto quando falha.
 
-## Configuração por dispositivo
+Os avisos do aplicativo complementam o indicador, com detalhes de falhas
+guardados nos arquivos de diagnóstico em vez de ocupar a tela.
 
-- Windows: pasta de Vídeos do usuário (ou destino escolhido em Ajustes).
-- Linux: pasta de vídeos do usuário / XDG.
-- macOS: Movies do usuário.
-- Para teste: variável `SAIMO_GRAVACOES_DIR` com um caminho absoluto.
-- Deve acompanhar o aplicativo um FFmpeg e, para validação, um ffprobe
-  compatíveis com a plataforma. Nenhum OBS é necessário.
+## Fontes especiais
 
-## Agendamentos
+Fontes HLS com URL `.txt` usam o formato forçado `-f hls`, como o mpv.
+Se a primeira tentativa falhar sem bytes, há um segundo modo restrito de
+extensões (incluindo `.woff`), sem desativar globalmente os filtros FFmpeg.
+Não contorna DRM nem servidores que rejeitem ou expirem URLs.
 
-O agendador atual funciona enquanto o Saimo permanece aberto num
-computador ligado. A gravação não exige manter o canal no primeiro plano,
-pois é independente do player. Iniciar com o Saimo fechado ainda requer
-um agente ou integração futura com o Agendador de Tarefas / systemd.
+## Recuperação e agendamento
 
-## Testes
+Na próxima inicialização, o DVR procura sessões interrompidas e tenta
+remontar trechos existentes. É possível perder o segmento incompleto numa
+queda de energia; **100% de recuperação não pode ser garantida**.
 
-- Testar canal TV aberta que já falhava com `.txt` / `.woff`.
-- Testar fonte HLS normal `.m3u8`.
-- Confirmar segmentos independentes após mais de 35 s.
-- Confirmar vídeo + áudio no `ffprobe` e reprodução de `gravacao_final.mkv`.
-- Encerrar processo Saimo abruptamente: trechos anteriores devem permanecer.
-- Deixar Saimo aberto e agendar um canal em segundo plano.
-- Verificar comportamento em PC sem encoder de GPU — `-c copy` não requer
-  encode por hardware.
+Agendamentos usam o mesmo gravador direto, mas precisam que o computador
+esteja ligado e o Saimo aberto no horário programado. Não exigem que o canal
+esteja visível durante a gravação. Um agente residente para iniciar com o
+aplicativo fechado é trabalho futuro.
+
+O destino é por dispositivo, configurável em Ajustes; no teste em Windows
+utilizamos `SAIMO_GRAVACOES_DIR` para direcionar os arquivos ao disco J: ou E:.
+É necessário disponibilizar `ffmpeg` e `ffprobe` portáteis junto do
+executável para gravação e manutenção completas.
