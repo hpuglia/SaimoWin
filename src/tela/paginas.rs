@@ -190,7 +190,7 @@ pub fn abrir_em_foco_na_fileira(app: &mut App) {
 
 pub fn favoritar_em_foco_na_fileira(app: &mut App) {
     let Some(cartao) = em_foco(app) else { return };
-    match cartao.acao {
+    match &cartao.acao {
         Acao::Radio(_) => app.favoritar_radio(&cartao.titulo),
         _ => {
             if let Some((titulo, _)) = cartao.obra() {
@@ -351,7 +351,10 @@ fn continuar(app: &App, filtro: impl Fn(bool) -> bool) -> Option<Fila> {
             let mut c = Cartao::novo(nome.clone(), Imagem::Capa(nome.clone(), achado.serie),
                 Acao::Continuar(item), heroi_titulo(&nome, achado.serie));
             c.progresso = Some(progresso::fracao(&marca).max(0.02));
-            c.sub = progresso::falta(&marca);
+            c.sub = match rotulo.split_once(" · ") {
+                Some((_, episodio)) => format!("{episodio} · {}", progresso::falta(&marca)),
+                None => progresso::falta(&marca),
+            };
             c.favorito = app.favoritos_vod.contains(&nome);
             cartoes.push(c);
             if cartoes.len() == 20 { break; }
@@ -959,6 +962,15 @@ fn tocando_agora(app: &mut App, ui: &mut egui::Ui, area: Rect, (nome, logo, conf
             app.parar_radio();
         }
     });
+    let favorita = radios::eh_favorita(&nome);
+    let estrela = Rect::from_min_size(Pos2::new(botao.left() - 52.0, botao.top()), egui::vec2(44.0, 44.0));
+    ui.scope_builder(egui::UiBuilder::new().max_rect(estrela), |ui| {
+        let icone = if favorita { Icone::Estrela } else { Icone::EstrelaVazia };
+        let dica = if favorita { "Remover das rádios favoritas" } else { "Adicionar às rádios favoritas" };
+        if super::botao_redondo(ui, icone, 44.0, dica, favorita).clicked() {
+            app.favoritar_radio(&nome);
+        }
+    });
 }
 
 /// Título, linha de cima, se a linha leva a estrela, sinopse e de quem é o fundo.
@@ -1164,7 +1176,7 @@ fn uma_fileira(
                             *escolhido = Some(cartao.acao.clone());
                         }
                         if resposta.secondary_clicked() {
-                            if matches!(cartao.acao, Acao::Radio(_)) {
+                            if matches!(&cartao.acao, Acao::Radio(_)) {
                                 *favoritar = Some((cartao.titulo.clone(), true));
                             } else if let Some((titulo, _)) = cartao.obra() {
                                 *favoritar = Some((titulo, false));
