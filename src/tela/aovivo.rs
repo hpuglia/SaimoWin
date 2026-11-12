@@ -744,7 +744,8 @@ fn barra_do_ao_vivo(app: &mut App, ui: &mut egui::Ui, area: Rect) {
                 let pendentes = app.dvr.pendentes_no_canal(&nome);
                 let historico = app.dvr.agendamentos_do_canal(&nome);
                 let ativo_agendado = historico.iter().any(|(_, a)| 
-                    a.status == "gravando" || a.status == "processando"
+                    a.status == "iniciando" || a.status == "gravando"
+                        || a.status == "processando"
                 );
                 let botao_agenda = botao_redondo(
                     ui, Icone::Agendar, 42.0,
@@ -1578,12 +1579,14 @@ pub fn dialogo_lista_agendamentos(app: &mut App, ctx: &egui::Context) {
                             ("AGUARDANDO", ACENTO)
                         } else {
                             match a.status.as_str() {
+                                "iniciando" => ("PREPARANDO", Color32::from_rgb(246, 194, 78)),
                                 "gravando" => ("GRAVANDO", Color32::from_rgb(255, 100, 100)),
                                 "processando" => ("PROCESSANDO", Color32::from_rgb(110, 199, 255)),
                                 "concluida" => ("CONCLUÍDA", Color32::from_rgb(120, 220, 170)),
                                 "falhou" => ("FALHOU", Color32::from_rgb(255, 120, 120)),
                                 "perdida" => ("HORÁRIO PERDIDO", Color32::from_rgb(255, 160, 120)),
                                 "cancelada" => ("CANCELADA", SECUNDARIO),
+                                "interrompida" => ("INTERROMPIDA", Color32::from_rgb(255, 160, 120)),
                                 _ => ("EXECUTADA", SECUNDARIO),
                             }
                         };
