@@ -1315,6 +1315,9 @@ impl App {
         self.radio = None;
         self.episodios_no_player = false;
         let Some(mpv) = self.mpv.as_ref() else { return };
+        if let Ok(Some(p)) = self.dvr.parar_no_player(mpv) {
+            self.aviso = Some((format!("Gravação encerrada ao trocar de conteúdo: {}", p.display()), Instant::now()));
+        }
         let Some(url) = urls.get(fonte).cloned() else {
             telemetria::caiu("vod", &titulo, urls.len());
             self.aviso = Some((format!("{titulo}: nenhuma fonte abriu"), Instant::now()));
@@ -1792,6 +1795,9 @@ impl App {
         self.radio = None;
         self.fonte_preferida = None;
         let Some(mpv) = self.mpv.as_ref() else { return };
+        if let Ok(Some(p)) = self.dvr.parar_no_player(mpv) {
+            self.aviso = Some((format!("Gravação encerrada ao mudar de canal: {}", p.display()), Instant::now()));
+        }
         let Some(c) = self.canais.get(canal) else { return };
         // Sintonia nova começa pela fonte que tocou da última vez.
         let fonte = if nova && fonte == 0 {
@@ -3619,9 +3625,14 @@ vec4 hook() {{
         let Some(indice) = self.tocando.as_ref().map(|t| t.canal) else { return };
         let Some(nome) = self.canais.get(indice).map(|c| c.nome.clone()) else { return };
         if self.dvr.ativo_no_canal(&nome) {
-            let resultado = self.dvr.parar(&nome);
-            let aviso = resultado.map(|_| "Finalizando gravação…".to_string())
-                .unwrap_or_else(|e| format!("Não foi possível parar: {e}"));
+            let resultado = self.mpv.as_deref().ok_or("Player indisponível".to_string())
+                .and_then(|mpv| self.dvr.parar_no_player(mpv));
+            let aviso = match resultado {
+                Ok(Some(p)) => format!("Gravação encerrada: {}", p.display()),
+                Ok(None) => self.dvr.parar(&nome).map(|_| "Finalizando gravação…".into())
+                    .unwrap_or_else(|e| format!("Não foi possível parar: {e}")),
+                Err(e) => format!("Não foi possível parar: {e}"),
+            };
             self.aviso = Some((aviso, Instant::now()));
         } else {
             self.gravacao_dialogo_aberto = true;
@@ -3636,6 +3647,11 @@ vec4 hook() {{
     pub fn confirmar_gravacao_manual(&mut self) {
         let Some((indice, fonte)) = self.tocando.as_ref().map(|t| (t.canal, t.fonte)) else { return };
         let Some(canal) = self.canais.get(indice).cloned() else { return };
+        // Não gravar fontes identificadas como protegidas no catálogo.
+        if canal.fontes.get(fonte).is_some_and(|f| f.chave.is_some()) {
+            self.aviso = Some(("A fonte atual não permite gravação".into(), Instant::now()));
+            return;
+        }
         let duracao = if self.gravacao_com_limite {
             match self.gravacao_minutos.trim().parse::<u64>() {
                 Ok(m) if (1..=480).contains(&m) => Some(m * 60),
@@ -3645,10 +3661,14 @@ vec4 hook() {{
                 }
             }
         } else { None };
-        match self.dvr.iniciar(&canal, fonte, duracao) {
+        let resultado = self.mpv.as_deref().ok_or("Player indisponível".to_string())
+            .and_then(|mpv| self.dvr.iniciar_no_player(&canal.nome, mpv, duracao));
+        match resultado {
             Ok(p) => {
                 self.gravacao_dialogo_aberto = false;
-                self.aviso = Some((format!("Gravação iniciada: {}", p.display()), Instant::now()));
+                self.aviso = Some((format!(
+                    "Gravação solicitada ao player: {}. Mantenha o canal aberto.", p.display()
+                ), Instant::now()));
             }
             Err(e) => self.aviso = Some((format!("Não foi possível gravar: {e}"), Instant::now())),
         }
@@ -3715,6 +3735,9 @@ vec4 hook() {{
             self.aviso = Some(("O player não abriu: a rádio não tem como tocar".into(), Instant::now()));
             return;
         };
+        if let Ok(Some(p)) = self.dvr.parar_no_player(mpv) {
+            self.aviso = Some((format!("Gravação encerrada: {}", p.display()), Instant::now()));
+        }
         mpv.tocar_ao_vivo(&radio.url, None, None);
         mpv.pausa(false);
         self.pausado = false;
@@ -4228,7 +4251,7 @@ impl eframe::App for App {
         self.cuidar_dos_eventos(ctx);
         if self.ultima_verificacao_dvr.elapsed() >= Duration::from_secs(1) {
             self.ultima_verificacao_dvr = Instant::now();
-            for recado in self.dvr.atualizar(&self.canais) {
+            for recado in self.dvr.atualizar(&self.canais, self.mpv.as_deref()) {
                 self.aviso = Some((recado, Instant::now()));
             }
         }
