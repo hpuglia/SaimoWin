@@ -228,6 +228,7 @@ pub fn desenhar(app: &mut App, ui: &mut egui::Ui) {
     if app.dialogo_listas.is_some() {
         janelas::listas(app, ctx);
     }
+    aovivo::dialogo_agendamento(app, ctx);
 
     // Decidir o cursor por último: on_hover_cursor dos botões pode sobrescrever
     // CursorIcon::None se o mouse ficar parado sobre um controle que sumiu.
@@ -239,6 +240,7 @@ pub fn desenhar(app: &mut App, ui: &mut egui::Ui) {
     let modal_aberto = ((!esta_no_vod) && (app.lista_aberta || app.guia_aberto))
         || app.episodios_no_player
         || app.ajuda_aberta
+        || app.agendamento_aberto
         || app.dialogo_listas.is_some()
         || app.nova_versao.is_some()
         || !app.aprovacoes.is_empty();
