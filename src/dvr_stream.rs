@@ -8,6 +8,7 @@ use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::mpsc::Sender;
 use std::time::{Duration, Instant};
 
 const TEMPO_SEGMENTO: u32 = 30;
@@ -64,6 +65,72 @@ struct Estado {
     bytes: u64,
     partes: usize,
     erro: Option<String>,
+    #[serde(default)]
+    arquivo_final: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct ResultadoFinal {
+    pub canal: String,
+    pub sucesso: bool,
+    pub mensagem: String,
+    pub arquivo: Option<PathBuf>,
+}
+
+pub fn pasta_de_trabalho(raiz: &Path) -> PathBuf {
+    raiz.join("_Processando")
+}
+
+fn raiz_da_gravacao(pasta: &Path) -> Option<PathBuf> {
+    let pai = pasta.parent()?;
+    if pai.file_name().is_some_and(|n| n == "_Processando") {
+        pai.parent().map(Path::to_path_buf)
+    } else {
+        Some(pai.to_path_buf())
+    }
+}
+
+fn nome_final_disponivel(pasta: &Path) -> Result<PathBuf, String> {
+    let raiz = raiz_da_gravacao(pasta).ok_or("Pasta de gravação inválida")?;
+    let nome = pasta.file_name().and_then(|s| s.to_str())
+        .ok_or("Nome da sessão inválido")?;
+    for n in 0..10000 {
+        let sufixo = if n == 0 { String::new() } else { format!("-{n}") };
+        let saida = raiz.join(format!("{nome}{sufixo}.mkv"));
+        if !saida.exists() { return Ok(saida); }
+    }
+    Err("Não foi possível reservar arquivo final exclusivo".into())
+}
+
+fn publicar_validado(pasta: &Path, ffmpeg: &Path) -> Result<PathBuf, String> {
+    let mut estado = ler_estado(pasta).ok_or("Manifesto da gravação ausente")?;
+    // Depois de um encerramento inesperado, concluir uma limpeza pendente.
+    if let Some(existente) = estado.arquivo_final.as_deref() {
+        let saida = PathBuf::from(existente);
+        if saida.is_file() && validar_fluxos(ffmpeg, &saida) == Some((true, true)) {
+            let _ = fs::remove_dir_all(pasta);
+            return Ok(saida);
+        }
+    }
+    let arquivo = pasta.join("gravacao_final.mkv");
+    if fs::metadata(&arquivo).map_or(true, |m| m.len() < MIN_BYTES) {
+        return Err("Arquivo final ausente ou vazio; trechos preservados".into());
+    }
+    match validar_fluxos(ffmpeg, &arquivo) {
+        Some((true, true)) => {}
+        Some((true, false)) => return Err("Vídeo sem faixa de áudio; trechos preservados".into()),
+        Some((false, _)) => return Err("Vídeo inválido; trechos preservados".into()),
+        None => return Err("Validação por ffprobe indisponível; arquivos preservados".into()),
+    }
+    let saida = nome_final_disponivel(pasta)?;
+    fs::rename(&arquivo, &saida).map_err(|e| format!("Publicação do vídeo: {e}"))?;
+    estado.estado = "publicada".into();
+    estado.arquivo_final = Some(saida.to_string_lossy().into_owned());
+    estado.erro = None;
+    salvar_estado(pasta, &estado);
+    // Não apagar nenhum trecho antes de validar E publicar o vídeo com áudio.
+    let _ = fs::remove_dir_all(pasta);
+    Ok(saida)
 }
 
 fn salvar_estado(pasta: &Path, estado: &Estado) {
@@ -150,7 +217,7 @@ fn finalizar_em_segundo_plano(pasta: PathBuf, ffmpeg: PathBuf, recuperar: bool) 
         let mut estado = ler_estado(&pasta).unwrap_or_else(|| Estado {
             canal: "Gravação recuperada".into(), inicio: String::new(),
             estado: "interrompida".into(), metodo: "ffmpeg -c copy".into(),
-            bytes: 0, partes: 0, erro: None,
+            bytes: 0, partes: 0, erro: None, arquivo_final: None,
         });
         let lista = pasta.join("partes.ffconcat");
         let mut entradas = String::from("ffconcat version 1.0\n");
@@ -261,7 +328,7 @@ impl GravacaoStream {
         let estado = Estado {
             canal: canal.nome.clone(), inicio: Local::now().to_rfc3339(),
             estado: "iniciando".into(), metodo: "ffmpeg -c copy".into(),
-            bytes: 0, partes: 0, erro: None,
+            bytes: 0, partes: 0, erro: None, arquivo_final: None,
         };
         salvar_estado(&pasta, &estado);
         let (filho, log) = Self::abrir_ffmpeg(&ffmpeg, &pasta, &fonte, duracao, 0)?;
