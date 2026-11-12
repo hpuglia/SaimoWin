@@ -432,6 +432,30 @@ mod testes {
     }
 
     #[test]
+    fn agenda_legada_sem_status_ou_programa_continua_abrindo() {
+        let json = r#"{"canal":"SBT SP","fonte":0,"inicio":1794484800,
+            "fim":1794488400,"executado":false}"#;
+        let a: Agendamento = serde_json::from_str(json).unwrap();
+        assert_eq!(a.canal, "SBT SP");
+        assert!(!a.executado);
+        assert!(a.status.is_empty());
+        assert!(a.programa.is_none());
+    }
+
+    #[test]
+    fn agenda_nova_guarda_status_e_programacao() {
+        let a = Agendamento {
+            canal: "SBT SP".into(), fonte: 0, inicio: 1794484800,
+            fim: 1794488400, executado: false,
+            status: "aguardando".into(), programa: Some("Jornal".into()),
+        };
+        let json = serde_json::to_string(&a).unwrap();
+        let b: Agendamento = serde_json::from_str(&json).unwrap();
+        assert_eq!(b.status, "aguardando");
+        assert_eq!(b.programa.as_deref(), Some("Jornal"));
+    }
+
+    #[test]
     fn pasta_padrao_por_dispositivo() {
         assert!(pasta_padrao().is_absolute() || !home().is_absolute());
     }
