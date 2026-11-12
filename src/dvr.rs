@@ -142,6 +142,10 @@ pub struct Agendamento {
     pub fim: i64,
     #[serde(default)]
     pub executado: bool,
+    #[serde(default)]
+    pub status: String,
+    #[serde(default)]
+    pub programa: Option<String>,
 }
 
 /// O DVR nunca recodifica vídeo nem áudio; cada sessão contém partes
@@ -212,6 +216,30 @@ impl Dvr {
     pub fn quantidade_agendada(&self) -> usize {
         self.agendados.iter().filter(|a| !a.executado).count()
     }
+
+    pub fn agendamentos_do_canal(&self, canal: &str) -> Vec<(usize, Agendamento)> {
+        let mut lista: Vec<_> = self.agendados.iter().enumerate()
+            .filter(|(_, a)| a.canal == canal)
+            .map(|(i, a)| (i, a.clone()))
+            .collect();
+        lista.sort_by_key(|(_, a)| std::cmp::Reverse(a.inicio));
+        lista.truncate(10);
+        lista
+    }
+
+    pub fn pendentes_no_canal(&self, canal: &str) -> usize {
+        self.agendados.iter().filter(|a| a.canal == canal && !a.executado).count()
+    }
+
+    pub fn cancelar_agendamento(&mut self, indice: usize) -> Result<(), String> {
+        let a = self.agendados.get_mut(indice).ok_or("Agendamento não encontrado")?;
+        if a.executado { return Err("Este agendamento já foi executado".into()); }
+        a.executado = true;
+        a.status = "cancelada".into();
+        self.salvar_agenda();
+        Ok(())
+    }
+
     pub fn ativo_no_canal(&self, nome: &str) -> bool {
         self.ativos.iter().any(|r| r.canal == nome)
     }
@@ -238,7 +266,10 @@ impl Dvr {
         ativo.solicitar_parada()
     }
 
-    pub fn agendar(&mut self, canal: &str, fonte: usize, inicio: &str, minutos: u32) -> Result<(), String> {
+    pub fn agendar(
+        &mut self, canal: &str, fonte: usize, inicio: &str, minutos: u32,
+        programa: Option<String>,
+    ) -> Result<(), String> {
         let formato = NaiveDateTime::parse_from_str(inicio.trim(), "%Y-%m-%d %H:%M")
             .map_err(|_| "Data inválida. Use AAAA-MM-DD HH:MM".to_string())?;
         let data = Local.from_local_datetime(&formato).single()
@@ -250,9 +281,15 @@ impl Dvr {
         if !(1..=480).contains(&minutos) {
             return Err("Duração permitida: 1 a 480 minutos.".into());
         }
+        if self.agendados.iter().any(|a|
+            !a.executado && a.canal == canal && a.inicio == data
+        ) {
+            return Err("Já existe agendamento desse canal no horário".into());
+        }
         self.agendados.push(Agendamento {
             canal: canal.into(), fonte, inicio: data,
-            fim: data + (minutos as i64) * 60, executado: false
+            fim: data + (minutos as i64) * 60, executado: false,
+            status: "aguardando".into(), programa,
         });
         self.salvar_agenda();
         Ok(())
@@ -269,6 +306,12 @@ impl Dvr {
                 FaseGravacao::Erro
             };
             self.recente.insert(evento.canal.clone(), (fase, Instant::now()));
+            for a in &mut self.agendados {
+                if a.canal == evento.canal && (a.status == "gravando" || a.status == "processando") {
+                    a.status = if evento.sucesso { "concluida" } else { "falhou" }.into();
+                }
+            }
+            self.salvar_agenda();
             avisos.push(evento.mensagem);
         }
         let mut i = 0;
@@ -281,10 +324,22 @@ impl Dvr {
                 let concluida = self.ativos.remove(i);
                 if concluida.tem_dados() && concluida.tem_finalizacao() {
                     self.processando.insert(concluida.canal.clone());
+                    for a in &mut self.agendados {
+                        if a.canal == concluida.canal && a.status == "gravando" {
+                            a.status = "processando".into();
+                        }
+                    }
+                    self.salvar_agenda();
                     self.recente.insert(
                         concluida.canal.clone(), (FaseGravacao::Processando, Instant::now())
                     );
                 } else {
+                    for a in &mut self.agendados {
+                        if a.canal == concluida.canal && a.status == "gravando" {
+                            a.status = "falhou".into();
+                        }
+                    }
+                    self.salvar_agenda();
                     self.recente.insert(
                         concluida.canal.clone(), (FaseGravacao::Erro, Instant::now())
                     );
@@ -300,6 +355,7 @@ impl Dvr {
             let a = self.agendados[i].clone();
             if agora >= a.fim {
                 self.agendados[i].executado = true;
+                self.agendados[i].status = "perdida".into();
                 salvar = true;
                 avisos.push(format!(
                     "Gravação programada perdida (Saimo fechado/desligado?): {}", a.canal
@@ -310,20 +366,21 @@ impl Dvr {
                 // continuam disponíveis mesmo após encerramento inesperado.
                 self.agendados[i].executado = true;
                 salvar = true;
-                if let Some(c) = canais.iter().find(|c| c.nome == a.canal) {
-                    match self.iniciar(c, a.fonte, Some((a.fim - agora) as u64)) {
-                        Ok(p) => avisos.push(format!(
-                            "DVR: agendamento iniciado para {}. Verificando dados em {}",
-                            c.nome, p.display()
-                        )),
-                        Err(e) => avisos.push(format!(
-                            "DVR: agendamento de {} falhou: {e}", a.canal
-                        )),
-                    }
+                let resultado = if let Some(c) = canais.iter().find(|c| c.nome == a.canal) {
+                    self.iniciar(c, a.fonte, Some((a.fim - agora) as u64))
+                        .map(|_| ())
                 } else {
-                    avisos.push(format!(
-                        "DVR: canal agendado não encontrado no catálogo: {}", a.canal
-                    ));
+                    Err(format!("Canal agendado não encontrado: {}", a.canal))
+                };
+                match resultado {
+                    Ok(()) => {
+                        self.agendados[i].status = "gravando".into();
+                        avisos.push(format!("DVR: agendamento iniciado — {}", a.canal));
+                    }
+                    Err(e) => {
+                        self.agendados[i].status = "falhou".into();
+                        avisos.push(format!("DVR: agendamento falhou — {e}"));
+                    }
                 }
             }
         }
