@@ -141,6 +141,7 @@ fn chave(app: &App) -> u64 {
     app.busca_vod.hash(&mut h);
     app.favoritos_vod.hash(&mut h);
     app.favoritos.hash(&mut h);
+    app.radios_somente_favoritas.hash(&mut h);
     app.liberado.hash(&mut h);
     (app.filas.len(), app.acervo.len(), app.canais.len(), app.radios.len(), app.eventos.len()).hash(&mut h);
     app.colecoes_carregadas().hash(&mut h);
@@ -713,6 +714,7 @@ fn filas_de_radios(app: &App) -> Vec<Fila> {
         .map(|i| cartao_de_radio(i, &app.radios[i]))
         .collect();
     filas.push(Fila { titulo: "Rádios favoritas".into(), tipo: Tipo::Largo, cartoes: favoritas });
+    if app.radios_somente_favoritas { return filas; }
     let recentes: Vec<Cartao> = radios::recentes()
         .iter()
         .filter_map(|nome| app.radios.iter().position(|r| r.nome == *nome))
@@ -925,6 +927,30 @@ fn destaque(app: &mut App, ui: &mut egui::Ui, area: Rect, altura: f32) {
     }
     if !sinopse.is_empty() {
         texto(&pintor, &sinopse, normal(16.0), branco(217), Pos2::new(x, y), largura, 2, false);
+    }
+    // Filtros independentes da aba global Favoritos de filmes/séries.
+    if app.aba == Aba::Radios {
+        let barra = Rect::from_min_size(
+            Pos2::new(x, area.top() + altura - 44.0),
+            egui::vec2(332.0, 36.0),
+        );
+        ui.scope_builder(
+            egui::UiBuilder::new().max_rect(barra)
+                .layout(egui::Layout::left_to_right(egui::Align::Center)),
+            |ui| {
+                ui.spacing_mut().item_spacing.x = 8.0;
+                if ui.selectable_label(!app.radios_somente_favoritas, "Todas as rádios").clicked() {
+                    app.radios_somente_favoritas = false;
+                    app.foco_fila = 0;
+                    app.foco_vod = 0;
+                }
+                if ui.selectable_label(app.radios_somente_favoritas, "★ Favoritos").clicked() {
+                    app.radios_somente_favoritas = true;
+                    app.foco_fila = 0;
+                    app.foco_vod = 0;
+                }
+            },
+        );
     }
     // A rádio que está tocando, à direita do destaque das Rádios.
     if app.aba == Aba::Radios {
@@ -1165,12 +1191,30 @@ fn uma_fileira(
                         let cartao = &fila.cartoes[k];
                         let focado = indice_fila == app.foco_fila && k == foco;
                         let resposta = desenhar_cartao(app, ui, lugar(k), cartao, fila.tipo, focado, id.with(k));
+                        // O clique na estrela não deve disparar a reprodução.
+                        let clicou_estrela = if matches!(&cartao.acao, Acao::Radio(_)) {
+                            let (_, img) = medidas(fila.tipo);
+                            let quadro = Rect::from_min_size(lugar(k).min + egui::vec2(6.0, 6.0), img);
+                            let centro = quadro.right_top() + egui::vec2(-18.0, 18.0);
+                            let alvo = Rect::from_center_size(centro, egui::vec2(34.0, 34.0));
+                            let estrela = ui.interact(alvo, id.with((k, "favoritar-radio")), Sense::click())
+                                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                                .on_hover_text(if cartao.favorito {
+                                    "Remover rádio dos favoritos"
+                                } else {
+                                    "Adicionar rádio aos favoritos"
+                                });
+                            if estrela.clicked() {
+                                *favoritar = Some((cartao.titulo.clone(), true));
+                            }
+                            estrela.clicked()
+                        } else { false };
                         if resposta.hovered() && ui.input(|i| i.pointer.delta() != egui::Vec2::ZERO) {
                             app.foco_fila = indice_fila;
                             app.foco_vod = k;
                             app.heroi = Some(cartao.heroi.clone());
                         }
-                        if resposta.clicked() {
+                        if resposta.clicked() && !clicou_estrela {
                             app.foco_fila = indice_fila;
                             app.foco_vod = k;
                             *escolhido = Some(cartao.acao.clone());
@@ -1282,10 +1326,13 @@ fn imagem_do_cartao(app: &mut App, ui: &egui::Ui, quadro: Rect, cartao: &Cartao,
     if let Some((selo, vivo)) = cartao.selo.as_ref() {
         selo_vivo(pintor, quadro.min + egui::vec2(10.0, 10.0), selo, *vivo, 11.5);
     }
-    if cartao.favorito && matches!(tipo, Tipo::Capa | Tipo::Largo) {
+    let radio = matches!(&cartao.acao, Acao::Radio(_));
+    if (radio || cartao.favorito) && matches!(tipo, Tipo::Capa | Tipo::Largo) {
         let centro = quadro.right_top() + egui::vec2(-18.0, 18.0);
-        pintor.circle_filled(centro, 14.0, Color32::from_black_alpha(160));
-        icones::pintar(pintor, Icone::Estrela, centro, 18.0, super::AMARELO);
+        pintor.circle_filled(centro, 16.0, Color32::from_black_alpha(185));
+        let icone = if cartao.favorito { Icone::Estrela } else { Icone::EstrelaVazia };
+        icones::pintar(pintor, icone, centro, 21.0,
+            if cartao.favorito { super::AMARELO } else { TEXTO });
     }
     if let Some(fracao) = cartao.progresso.filter(|f| *f > 0.0) {
         let trilho = Rect::from_min_size(Pos2::new(quadro.left() + 8.0, quadro.bottom() - 10.0), egui::vec2(quadro.width() - 16.0, 4.0));
