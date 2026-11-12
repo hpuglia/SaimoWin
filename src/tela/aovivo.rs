@@ -738,7 +738,7 @@ fn barra_do_ao_vivo(app: &mut App, ui: &mut egui::Ui, area: Rect) {
                 .layout(egui::Layout::left_to_right(egui::Align::Center)),
             |ui| {
                 ui.spacing_mut().item_spacing.x = 9.0;
-                let gravando = app.dvr.ativo_no_canal(&nome) || app.obs_gravando;
+                let gravando = app.dvr.ativo_no_canal(&nome);
                 if botao_redondo(ui, Icone::Agendar, 42.0, "Agendar gravação", false).clicked() {
                     app.abrir_agendamento_ao_vivo();
                 }
@@ -1278,7 +1278,6 @@ fn menu_de_velocidade(app: &mut App, ui: &mut egui::Ui) {
 pub fn dialogo_gravacao_manual(app: &mut App, ctx: &egui::Context) {
     if !app.gravacao_dialogo_aberto { return; }
     let mut com_limite = app.gravacao_com_limite;
-    let mut usar_obs = app.gravacao_motor_obs;
     let mut minutos = app.gravacao_minutos.clone();
     let mut iniciar = false;
     let mut cancelar = false;
@@ -1287,20 +1286,10 @@ pub fn dialogo_gravacao_manual(app: &mut App, ctx: &egui::Context) {
         .anchor(Align2::CENTER_CENTER, egui::Vec2::ZERO)
         .collapsible(false).resizable(false).default_width(420.0)
         .show(ctx, |ui| {
-            ui.label("Método de captura:");
-            ui.radio_value(&mut usar_obs, true,
-                "Capturar saída do player com OBS Studio — vídeo + áudio (recomendado)");
-            ui.radio_value(&mut usar_obs, false,
-                "Salvar fluxo original pelo mpv (experimental; pode criar 0 bytes)");
-            if usar_obs {
-                ui.label(egui::RichText::new(
-                    "OBS precisa estar aberto com uma cena de captura da janela do Saimo e do áudio. Salva na pasta definida no OBS."
-                ).small());
-            } else {
-                ui.label(egui::RichText::new(
-                    "O fluxo direto preserva a qualidade original, mas algumas transmissões HLS não permitem esta gravação."
-                ).small());
-            }
+            ui.label("Gravação direta da transmissão, sem recompressão e sem OBS.");
+            ui.label(egui::RichText::new(
+                "Trechos independentes de aproximadamente 30 s. Se ocorrer uma falha, os trechos já salvos continuam disponíveis."
+            ).small());
             ui.add_space(8.0);
             ui.radio_value(&mut com_limite, false, "Gravar até clicar em Parar");
             ui.radio_value(&mut com_limite, true, "Gravar por um tempo definido");
@@ -1317,7 +1306,6 @@ pub fn dialogo_gravacao_manual(app: &mut App, ctx: &egui::Context) {
             });
         });
     app.gravacao_com_limite = com_limite;
-    app.gravacao_motor_obs = usar_obs;
     app.gravacao_minutos = minutos;
     if cancelar { app.gravacao_dialogo_aberto = false; }
     if iniciar { app.confirmar_gravacao_manual(); }
