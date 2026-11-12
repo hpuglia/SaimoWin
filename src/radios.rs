@@ -94,13 +94,26 @@ pub fn ouviu(nome: &str) {
     let _ = std::fs::write(crate::catalogo::pasta().join(RECENTES), lista.join("\n"));
 }
 
-/// Nomes das rádios favoritas. Persistência local independente das recentes.
+/// Lê favoritas apenas uma vez por processo; a página desenha centenas de
+/// cartões e não deve acessar o disco em cada um.
+static FAVORITAS_EM_MEMORIA: std::sync::Mutex<Option<Vec<String>>> = std::sync::Mutex::new(None);
+
 pub fn favoritas() -> Vec<String> {
-    let texto = std::fs::read_to_string(crate::catalogo::pasta().join(FAVORITAS)).unwrap_or_default();
-    let mut vistas = std::collections::HashSet::new();
-    texto.lines().map(str::trim)
-        .filter(|n| !n.is_empty() && vistas.insert((*n).to_string()))
-        .map(str::to_string).collect()
+    let mut guardado = FAVORITAS_EM_MEMORIA.lock().unwrap();
+    if guardado.is_none() {
+        let texto = std::fs::read_to_string(crate::catalogo::pasta().join(FAVORITAS)).unwrap_or_default();
+        let mut vistas = std::collections::HashSet::new();
+        let lista = texto.lines().map(str::trim)
+            .filter(|n| !n.is_empty() && vistas.insert((*n).to_string()))
+            .map(str::to_string).collect();
+        *guardado = Some(lista);
+    }
+    guardado.as_ref().cloned().unwrap_or_default()
+}
+
+fn gravar_favoritas(lista: Vec<String>) {
+    let _ = std::fs::write(crate::catalogo::pasta().join(FAVORITAS), lista.join("\n"));
+    *FAVORITAS_EM_MEMORIA.lock().unwrap() = Some(lista);
 }
 
 pub fn eh_favorita(nome: &str) -> bool {
@@ -115,7 +128,7 @@ pub fn alternar_favorita(nome: &str) {
     } else {
         lista.insert(0, nome.to_string());
     }
-    let _ = std::fs::write(crate::catalogo::pasta().join(FAVORITAS), lista.join("\n"));
+    gravar_favoritas(lista);
 }
 
 /// Adiciona favoritos vindos do Saimo Connect sem apagar os locais.
@@ -130,7 +143,7 @@ pub fn importar_favoritas(remotas: &[String]) -> bool {
         }
     }
     if mudou {
-        let _ = std::fs::write(crate::catalogo::pasta().join(FAVORITAS), lista.join("\n"));
+        gravar_favoritas(lista);
     }
     mudou
 }
