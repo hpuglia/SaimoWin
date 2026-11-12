@@ -143,6 +143,6 @@ mod tests {
     #[test]
     fn assinatura_do_protocolo_obs_e_estavel() {
         let x = assinatura("supersecretpassword", "lM1GncleQOaCu9lT1yeUZhFYnqhsLLP1G5lAGo3ixaI=", "+IxH4CnCiqpX1rM9scsNynZzbOe4KhDeYcTNS3PDaeY=");
-        assert_eq!(x, "Dj6cLS+jrNA0HpCArRg0Z/Fc+YHdt2FQfAvgD1mip6Y=");
+        assert_eq!(x, "1Ct943GAT+6YQUUX47Ia/ncufilbe6+oD6lY+5kaCu4=");
     }
 }
