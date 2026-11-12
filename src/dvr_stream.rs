@@ -284,27 +284,42 @@ fn finalizar_em_segundo_plano(
 
 /// Reabrir o aplicativo não destrói sessões interrompidas. Tenta montar
 /// o arquivo final em segundo plano, mantendo todos os trechos originais.
-pub fn recuperar_sessoes(raiz: &Path, ffmpeg: &Path) -> usize {
-    let Ok(itens) = fs::read_dir(raiz) else { return 0 };
+pub fn recuperar_sessoes(
+    raiz: &Path, ffmpeg: &Path, eventos: Sender<ResultadoFinal>
+) -> usize {
     let mut recuperadas = 0;
-    for dir in itens.flatten().filter(|i| i.path().is_dir()) {
-        let pasta = dir.path();
-        let Some(mut estado) = ler_estado(&pasta) else { continue };
-        if estado.estado == "gravando" || estado.estado == "iniciando"
-            || estado.estado == "finalizando" {
-            estado.estado = "interrompida".into();
+    // Pastas novas ficam isoladas em _Processando. Pastas antigas V14
+    // estavam diretamente na raiz; ambas são revisadas ao iniciar.
+    for origem in [raiz.to_path_buf(), pasta_de_trabalho(raiz)] {
+        let Ok(itens) = fs::read_dir(&origem) else { continue };
+        for dir in itens.flatten().filter(|i| i.path().is_dir()) {
+            let pasta = dir.path();
+            let Some(mut estado) = ler_estado(&pasta) else { continue };
+            let pronto = pasta.join("gravacao_final.mkv").is_file()
+                || estado.arquivo_final.is_some();
             let (bytes, n) = bytes_da_sessao(&pasta);
-            estado.bytes = bytes;
-            estado.partes = n;
-            salvar_estado(&pasta, &estado);
-            if n > 0 {
-                finalizar_em_segundo_plano(pasta, ffmpeg.to_path_buf(), true);
+            if pronto || n > 0 && matches!(
+                estado.estado.as_str(),
+                "gravando" | "iniciando" | "finalizando" | "interrompida"
+                | "finalizada" | "finalizada_nao_verificada"
+                | "partes_recuperaveis" | "publicada"
+            ) {
+                if !pronto {
+                    estado.estado = "interrompida".into();
+                    estado.bytes = bytes;
+                    estado.partes = n;
+                    salvar_estado(&pasta, &estado);
+                }
+                finalizar_em_segundo_plano(
+                    pasta, ffmpeg.to_path_buf(), !pronto, eventos.clone()
+                );
                 recuperadas += 1;
             }
         }
     }
     recuperadas
 }
+
 
 pub struct GravacaoStream {
     pub canal: String,
@@ -324,19 +339,20 @@ pub struct GravacaoStream {
     pub parada_solicitada: bool,
     parar_em: Option<Instant>,
     houve_dados: bool,
+    eventos: Sender<ResultadoFinal>,
 }
 
 impl GravacaoStream {
     pub fn iniciar(
         canal: &catalogo::Canal, indice: usize, duracao: Option<u64>,
-        ffmpeg: PathBuf, raiz: &Path,
+        ffmpeg: PathBuf, raiz: &Path, eventos: Sender<ResultadoFinal>,
     ) -> Result<Self, String> {
         let fonte = canal.fontes.get(indice).ok_or("Fonte não encontrada")?.clone();
         if fonte.chave.is_some() { return Err("A fonte informa proteção de conteúdo".into()); }
         if !fonte.url.starts_with("https://") && !fonte.url.starts_with("http://") {
             return Err("Gravação direta só permite transmissões HTTP(S)".into());
         }
-        let pasta = nome_da_sessao(&canal.nome, raiz)?;
+        let pasta = nome_da_sessao(&canal.nome, &pasta_de_trabalho(raiz))?;
         let estado = Estado {
             canal: canal.nome.clone(), inicio: Local::now().to_rfc3339(),
             estado: "iniciando".into(), metodo: "ffmpeg -c copy".into(),
@@ -350,7 +366,7 @@ impl GravacaoStream {
             ultima_verificacao: Instant::now(),
             ultimo_bytes: 0, ultimas_partes: 0,
             ultima_contagem: Instant::now(), ultima_evolucao: Instant::now(),
-            parada_solicitada: false, parar_em: None, houve_dados: false,
+            parada_solicitada: false, parar_em: None, houve_dados: false, eventos,
         })
     }
 
@@ -390,6 +406,8 @@ impl GravacaoStream {
         let filho = cmd.spawn().map_err(|e| format!("Falha ao iniciar FFmpeg: {e}"))?;
         Ok((filho, log))
     }
+
+    pub fn tem_dados(&self) -> bool { self.houve_dados }
 
     pub fn solicitar_parada(&mut self) -> Result<(), String> {
         if self.parada_solicitada { return Ok(()); }
@@ -493,7 +511,9 @@ impl GravacaoStream {
                         self.canal, self.log.display()
                     ));
                 } else {
-                    finalizar_em_segundo_plano(self.pasta.clone(), self.ffmpeg.clone(), false);
+                    finalizar_em_segundo_plano(
+                        self.pasta.clone(), self.ffmpeg.clone(), false, self.eventos.clone()
+                    );
                     avisos.push(format!(
                         "DVR: {} — {} trecho(s) salvos; preparando arquivo final em segundo plano.",
                         self.canal, n
