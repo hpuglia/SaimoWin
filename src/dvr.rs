@@ -144,6 +144,21 @@ struct GravacaoNoPlayer {
     fim_em: Option<std::time::Instant>,
     desde: std::time::Instant,
     avisou_sem_dados: bool,
+    confirmou_dados: bool,
+}
+
+/// MPV stream-record utiliza o contêiner indicado pela extensão. Para HLS e
+/// MPEG-TS o formato .ts é mais compatível que .mkv com pacotes originais.
+/// Em casos não reconhecidos de TV ao vivo, tentar .ts primeiro; não muda
+/// FFmpeg de agendamentos (que continua independente).
+fn extensao_da_transmissao(formato: Option<&str>) -> &'static str {
+    let formato = formato.unwrap_or("").to_ascii_lowercase();
+    if formato.contains("matroska") || formato.contains("webm")
+        || formato.contains("mp4") || formato.contains("mov,") {
+        "mkv"
+    } else {
+        "ts"
+    }
 }
 
 pub struct Dvr {
@@ -189,7 +204,13 @@ impl Dvr {
         if self.ativo_no_canal(canal) {
             return Err("Este canal já está sendo gravado".into());
         }
-        let arquivo = arquivo_novo(canal, "mkv", "Gravacoes")?;
+        let formato = mpv.ler("file-format");
+        let ext = extensao_da_transmissao(formato.as_deref());
+        let arquivo = arquivo_novo(canal, ext, "Gravacoes")?;
+        crate::diagnostico::etapa(&format!(
+            "DVR: stream-record formato={} contêiner={} (sem armazenar URL)",
+            formato.as_deref().unwrap_or("desconhecido"), ext
+        ));
         mpv.gravar_fluxo(Some(&arquivo))?;
         self.no_player = Some(GravacaoNoPlayer {
             canal: canal.into(),
@@ -197,6 +218,7 @@ impl Dvr {
             fim_em: duracao_s.map(|s| std::time::Instant::now() + std::time::Duration::from_secs(s)),
             desde: std::time::Instant::now(),
             avisou_sem_dados: false,
+            confirmou_dados: false,
         });
         Ok(arquivo)
     }
@@ -301,15 +323,20 @@ impl Dvr {
     pub fn atualizar(&mut self, canais: &[catalogo::Canal], mpv: Option<&mpv::Mpv>) -> Vec<String> {
         let mut avisos = Vec::new();
         if let Some(ativo) = self.no_player.as_mut() {
-            if ativo.desde.elapsed().as_secs() >= 12 && !ativo.avisou_sem_dados {
-                let bytes = fs::metadata(&ativo.arquivo).map(|m| m.len()).unwrap_or(0);
-                if bytes == 0 {
-                    ativo.avisou_sem_dados = true;
-                    avisos.push(format!(
-                        "O player ainda não escreveu dados da gravação de {}. Esta fonte pode não ser compatível.",
-                        ativo.canal
-                    ));
-                }
+            let bytes = fs::metadata(&ativo.arquivo).map(|m| m.len()).unwrap_or(0);
+            if bytes > 0 && !ativo.confirmou_dados {
+                ativo.confirmou_dados = true;
+                avisos.push(format!(
+                    "DVR: dados sendo gravados em {} ({} bytes até agora)",
+                    ativo.arquivo.display(), bytes
+                ));
+            } else if bytes == 0 && ativo.desde.elapsed().as_secs() >= 15
+                && !ativo.avisou_sem_dados {
+                ativo.avisou_sem_dados = true;
+                avisos.push(format!(
+                    "DVR: {} continua com 0 bytes após 15 s. O formato desta fonte pode não ser suportado por stream-record.",
+                    ativo.canal
+                ));
             }
         }
         let vencida = self.no_player.as_ref()
@@ -392,6 +419,14 @@ mod testes {
     fn sanitiza_nome_para_arquivos() {
         assert_eq!(nome_seguro("SBT: São Paulo / HD"), "SBT_ São Paulo _ HD");
     }
+    #[test]
+    fn escolhe_transport_stream_para_hls_ao_vivo() {
+        assert_eq!(extensao_da_transmissao(Some("hls")), "ts");
+        assert_eq!(extensao_da_transmissao(Some("mpegts")), "ts");
+        assert_eq!(extensao_da_transmissao(None), "ts");
+        assert_eq!(extensao_da_transmissao(Some("matroska,webm")), "mkv");
+    }
+
     #[test]
     fn pasta_padrao_nao_pressupoe_j_ou_e() {
         assert!(pasta_padrao().is_absolute() || !home().is_absolute());
