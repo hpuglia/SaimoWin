@@ -90,6 +90,31 @@ fn raiz_da_gravacao(pasta: &Path) -> Option<PathBuf> {
     }
 }
 
+/// Elimina apenas arquivos criados pelo Saimo DVR. Qualquer documento
+/// estranho deixado na pasta da sessão permanece intocado.
+fn limpar_temporarios(pasta: &Path) {
+    if let Ok(itens) = fs::read_dir(pasta) {
+        for item in itens.flatten() {
+            let p = item.path();
+            if !p.is_file() { continue; }
+            let nome = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            let nosso = (nome.starts_with("parte_") && nome.ends_with(".mkv"))
+                || (nome.starts_with("tentativa_") && nome.ends_with(".ffmpeg.log"))
+                || matches!(nome,
+                    "sessao.json" | "sessao.json.tmp" | "partes.ffconcat"
+                    | "gravacao_final.tmp.mkv"
+                );
+            if nosso { let _ = fs::remove_file(p); }
+        }
+    }
+    let _ = fs::remove_dir(pasta);
+    if let Some(pai) = pasta.parent() {
+        if pai.file_name().is_some_and(|n| n == "_Processando") {
+            let _ = fs::remove_dir(pai);
+        }
+    }
+}
+
 fn nome_final_disponivel(pasta: &Path) -> Result<PathBuf, String> {
     let raiz = raiz_da_gravacao(pasta).ok_or("Pasta de gravação inválida")?;
     let nome = pasta.file_name().and_then(|s| s.to_str())
@@ -108,7 +133,7 @@ fn publicar_validado(pasta: &Path, ffmpeg: &Path) -> Result<PathBuf, String> {
     if let Some(existente) = estado.arquivo_final.as_deref() {
         let saida = PathBuf::from(existente);
         if saida.is_file() && validar_fluxos(ffmpeg, &saida) == Some((true, true)) {
-            let _ = fs::remove_dir_all(pasta);
+            limpar_temporarios(pasta);
             return Ok(saida);
         }
     }
@@ -129,7 +154,7 @@ fn publicar_validado(pasta: &Path, ffmpeg: &Path) -> Result<PathBuf, String> {
     estado.erro = None;
     salvar_estado(pasta, &estado);
     // Não apagar nenhum trecho antes de validar E publicar o vídeo com áudio.
-    let _ = fs::remove_dir_all(pasta);
+    limpar_temporarios(pasta);
     Ok(saida)
 }
 
@@ -339,6 +364,7 @@ pub struct GravacaoStream {
     pub parada_solicitada: bool,
     parar_em: Option<Instant>,
     houve_dados: bool,
+    finalizacao_iniciada: bool,
     eventos: Sender<ResultadoFinal>,
 }
 
@@ -366,7 +392,8 @@ impl GravacaoStream {
             ultima_verificacao: Instant::now(),
             ultimo_bytes: 0, ultimas_partes: 0,
             ultima_contagem: Instant::now(), ultima_evolucao: Instant::now(),
-            parada_solicitada: false, parar_em: None, houve_dados: false, eventos,
+            parada_solicitada: false, parar_em: None, houve_dados: false,
+            finalizacao_iniciada: false, eventos,
         })
     }
 
@@ -408,6 +435,7 @@ impl GravacaoStream {
     }
 
     pub fn tem_dados(&self) -> bool { self.houve_dados }
+    pub fn tem_finalizacao(&self) -> bool { self.finalizacao_iniciada }
 
     pub fn solicitar_parada(&mut self) -> Result<(), String> {
         if self.parada_solicitada { return Ok(()); }
@@ -511,6 +539,7 @@ impl GravacaoStream {
                         self.canal, self.log.display()
                     ));
                 } else {
+                    self.finalizacao_iniciada = true;
                     finalizar_em_segundo_plano(
                         self.pasta.clone(), self.ffmpeg.clone(), false, self.eventos.clone()
                     );
