@@ -318,6 +318,8 @@ pub fn ajustes(app: &mut App, ui: &mut egui::Ui) {
     let mut acao: Option<u8> = None;
     let mut salvar_pasta_dvr = false;
     let mut pasta_dvr = app.pasta_gravacoes_texto.clone();
+    let mut cena_obs = app.obs_cena.clone();
+    let mut salvar_cena_obs = false;
     ui.scope_builder(egui::UiBuilder::new().max_rect(direita), |ui| {
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             ui.set_max_width(direita.width().min(760.0));
@@ -374,6 +376,23 @@ pub fn ajustes(app: &mut App, ui: &mut egui::Ui) {
             ui.label(egui::RichText::new("Use um caminho absoluto. Deixe vazio e salve para restaurar o padrão.").color(SECUNDARIO));
             ui.label(egui::RichText::new(format!("Agendamentos pendentes: {} · O PC precisa permanecer ligado e com o Saimo aberto",
                 app.dvr.quantidade_agendada())).color(SECUNDARIO));
+            ui.add_space(14.0);
+            ui.label(egui::RichText::new("OBS Studio: captura da janela + áudio").font(forte(17.0)).color(TEXTO));
+            ui.label(egui::RichText::new(
+                "Abra OBS > Ferramentas > Servidor WebSocket (porta 4455). Configure uma cena com captura da janela Saimo TV e marque Capturar áudio."
+            ).color(SECUNDARIO));
+            ui.horizontal(|ui| {
+                ui.label("Nome da cena:");
+                ui.add(egui::TextEdit::singleline(&mut cena_obs).desired_width(240.0));
+                if ui.button("Salvar cena").clicked() { salvar_cena_obs = true; }
+            });
+            ui.horizontal(|ui| {
+                ui.label("Senha WebSocket:");
+                ui.add(egui::TextEdit::singleline(&mut app.obs_senha).password(true).desired_width(240.0));
+            });
+            ui.label(egui::RichText::new(
+                "A senha não é salva. OBS grava na pasta escolhida em OBS > Configurações > Saída; o destino do DVR direto é independente."
+            ).color(SECUNDARIO));
             ui.add_space(18.0);
             rotulo_de_secao(ui, "Listas");
             ui.add_space(4.0);
@@ -453,6 +472,13 @@ pub fn ajustes(app: &mut App, ui: &mut egui::Ui) {
         });
     });
     app.pasta_gravacoes_texto = pasta_dvr;
+    app.obs_cena = cena_obs.trim().to_string();
+    if salvar_cena_obs {
+        let _ = std::fs::write(crate::catalogo::pasta().join("obs-cena.txt"), &app.obs_cena);
+        app.aviso = Some((
+            format!("Cena OBS configurada: {}", app.obs_cena), std::time::Instant::now()
+        ));
+    }
     if salvar_pasta_dvr {
         let texto = match crate::dvr::configurar_pasta(&app.pasta_gravacoes_texto) {
             Ok(destino) => {
